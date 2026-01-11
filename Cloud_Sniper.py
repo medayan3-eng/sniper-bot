@@ -11,7 +11,7 @@ import pytz
 # ==========================================
 st.set_page_config(page_title="AI Sniper Cloud", page_icon="☁️", layout="wide")
 
-# רשימת המניות (אותה רשימה מהגרסה האחרונה)
+# רשימת המניות
 TICKERS = [
     'PLTR', 'RKLB', 'GEV', 'INVZ', 'NVO', 'SMX', 'COHN', 'ASTI', 'NXTT', 'BNAI', 
     'INV', 'SCWO', 'ICON', 'MVO', 'FIEE', 'CD', 'KITT', 'UNTJ', 'RDHL', 'FLXY', 
@@ -25,7 +25,7 @@ TICKERS = [
     'JTAI', 'ATRA', 'MGRX', 'GRI', 'WSHP', 'NVVE', 'DRCT', 'BNZI', 'IZM'
 ]
 
-# פונקציות עזר לחישובים (אותה לוגיקה בדיוק)
+# פונקציות עזר
 def calculate_adx(df, n=14):
     try:
         df['H-L'] = df['High'] - df['Low']
@@ -141,32 +141,49 @@ def scan_market():
     status_text.empty()
     return pd.DataFrame(results)
 
+def plot_chart(ticker, stop_loss, take_profit):
+    try:
+        stock = yf.Ticker(ticker)
+        df = stock.history(period="3mo", interval="1d") # גרף יומי ברור יותר
+        
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(df.index, df['Close'], label='Price', color='black')
+        
+        # קווי מסחר
+        ax.axhline(stop_loss, color='red', linestyle='--', label=f'Stop: {stop_loss:.2f}')
+        ax.axhline(take_profit, color='green', linestyle='--', label=f'Target: {take_profit:.2f}')
+        
+        ax.set_title(f"{ticker} Analysis")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        return fig
+    except:
+        return None
+
 # ==========================================
 # 🖥️ ממשק משתמש (UI)
 # ==========================================
 st.title("☁️ AI Sniper Cloud Edition")
-st.markdown("### Professional Market Scanner")
 
 if st.button("🚀 START SCAN NOW", type="primary"):
-    with st.spinner('Analyzing Market Data... Please Wait...'):
+    with st.spinner('Analyzing Market Data...'):
         df = scan_market()
         
         if not df.empty:
-            # מיון וסידור
             df = df.sort_values(by='Prob', ascending=False)
             
-            # תצוגת מדדים
+            # 1. סטטיסטיקות
             active = df[df['Action'] != "💤 SLEEPING"]
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Total Scanned", len(df))
             c2.metric("💎 Opportunities", len(active[active['Action'].str.contains("BUY")]))
             c3.metric("🔥 Low Float", len(df[df['Float(M)'] < 20]))
-            c4.metric("Average Prob", f"{active['Prob'].mean():.1f}%")
+            c4.metric("Avg Prob", f"{active['Prob'].mean():.1f}%")
             
             st.divider()
-            st.subheader("📊 Live Results")
             
-            # פונקציית צבעים
+            # 2. טבלה
+            st.subheader("📊 Live Results")
             def highlight_rows(val):
                 if 'STRONG' in str(val): return 'background-color: #28a745; color: white'
                 if 'BUY' in str(val): return 'background-color: #d4edda; color: green'
@@ -176,8 +193,25 @@ if st.button("🚀 START SCAN NOW", type="primary"):
             st.dataframe(
                 df.style.map(highlight_rows, subset=['Action'])
                 .format({"Price": "{:.2f}", "Stop_Loss": "{:.2f}", "Take_Profit": "{:.2f}", "Float(M)": "{:.1f}M", "Short%": "{:.1f}%", "Prob": "{:.0f}%"}),
-                use_container_width=True,
-                height=600
+                use_container_width=True
             )
+            
+            # 3. גרפים (החלק החדש!)
+            st.divider()
+            st.subheader("📸 Top Charts (Buy Signals)")
+            
+            buy_signals = df[df['Action'].str.contains("BUY")]
+            
+            if not buy_signals.empty:
+                for idx, row in buy_signals.iterrows():
+                    with st.expander(f"Show Chart: {row['Ticker']} ({row['Action']})", expanded=True):
+                        fig = plot_chart(row['Ticker'], row['Stop_Loss'], row['Take_Profit'])
+                        if fig:
+                            st.pyplot(fig)
+                            plt.close(fig)
+                        st.write(f"**Reasons:** {row['Reasons']}")
+            else:
+                st.info("No charts to display (No Buy signals found).")
+                
         else:
-            st.error("No data found or market is closed.")
+            st.error("No data found.")
