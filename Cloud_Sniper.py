@@ -8,34 +8,28 @@ from datetime import datetime
 import pytz
 
 # ==========================================
-# ⚙️ הגדרות - גרסה 15.0 (Wall St. Edition)
+# ⚙️ הגדרות - גרסה 16.0 (Day Trader Pro)
 # ==========================================
-st.set_page_config(page_title="AI Sniper Pro", page_icon="🏛️", layout="wide")
+st.set_page_config(page_title="Day Trader Pro", page_icon="⚡", layout="wide")
 
-# רשימת המניות (כולל הסקטורים החמים והבקשות שלך)
+# רשימת המניות (ממוקדת למסחר יומי: AI, קריפטו, תנודתיות)
 TICKERS = [
+    # AI & Chips
+    'NVDA', 'AMD', 'PLTR', 'SOUN', 'BBAI', 'AI', 'SMCI', 'MU', 'ARM', 'TSM',
+    # Crypto
+    'MARA', 'COIN', 'RIOT', 'MSTR', 'CLSK', 'BITF', 'HUT', 'CIFR',
+    # High Volatility / Meme
+    'OPEN', 'SOFI', 'PLUG', 'LCID', 'DKNG', 'CVNA', 'UPST', 'AFRM', 'GME', 'AMC',
+    # The requests
     'DXCM', 'AKAM', 'ENPH', 'VST', 'ALB', 'ALNY', 'SYF', 'COF',
-    'NVDA', 'AMD', 'PLTR', 'SOUN', 'BBAI', 'AI', 'SMCI', 'MU', 'ARM',
-    'MARA', 'COIN', 'RIOT', 'MSTR', 'CLSK', 'BITF',
-    'OPEN', 'SOFI', 'PLUG', 'LCID', 'DKNG', 'CVNA', 'UPST', 'AFRM',
-    'RKLB', 'GEV', 'INVZ', 'NVO', 'SMX', 'COHN', 'ASTI', 'NXTT', 'BNAI', 
-    'INV', 'SCWO', 'ICON', 'MVO', 'FIEE', 'CD', 'KITT', 'UNTJ', 'RDHL', 'FLXY', 
-    'STAI', 'ORGN', 'VIOT', 'BRNF', 'ROMA', 'ACLS', 
-    'RGTI', 'QUBT', 'RGC', 'GLUE', 'IPSC', 'ERAS', 'MNTS', 'LIMN', 'GPUS', 'ABVE', 
-    'VTYX', 'TGL', 'AMOD', 'FBLG', 'SLRX', 'COOT', 'RVMD', 'CLIR', 'GHRS', 'NMRA', 
-    'MOBX', 'IMRX', 'RZLT', 'OLPX', 'OSS', 'BHVN', 'TNGX', 'MTEN', 'ANPA', 
-    'NBY', 'VLN', 'GP', 'ATGL', 'OPAD', 'VCIG', 'THH', 'GGROW', 'ZNTL', 'ELOG', 
-    'ZBAO', 'OPTX', 'CGON', 'MLTX', 'TCGL', 'MREO', 'HAO', 'NCRA', 'INBS', 'SOWG', 
-    'QTRX', 'SXTC', 'MTAN', 'PASW', 'ACON', 'AQST', 'BBNX', 'PAPL', 'STSS', 'EDHL', 
-    'JTAI', 'ATRA', 'MGRX', 'GRI', 'WSHP', 'NVVE', 'DRCT', 'BNZI', 'IZM',
-    'EVTV', 'BDSX', 'SUGP', 'UP', 'SOGP', 'OMH', 'BEAM', 'BARK', 
-    'LYRA', 'LXEO', 'VMAR', 'TSE', 'SLQT', 'CLRB', 'ZBIO', 'STKL', 'UUU', 
-    'AKAN', 'FBRX', 'BIOA', 'HYMC', 'LVLU', 'KC', 'ZH', 'SRL', 'DAWN', 'OM', 
-    'RBOT', 'ATEC', 'KUST', 'ANF', 'FLYX', 'STOK', 'GOVX', 'LRHC'
+    # Recent Movers
+    'RKLB', 'GEV', 'INVZ', 'SMX', 'COHN', 'ASTI', 'NXTT', 'BNAI', 
+    'SCWO', 'MVO', 'CD', 'KITT', 'RDHL', 'FLXY', 'OSS', 'BHVN',
+    'RGTI', 'QUBT', 'RGC', 'GLUE', 'MREO', 'BDSX', 'EVTV', 'SUGP'
 ]
 TICKERS = list(set(TICKERS))
 
-# --- פונקציות ליבה מקצועיות ---
+# --- פונקציות ליבה ---
 
 def get_market_status():
     ny_tz = pytz.timezone('America/New_York')
@@ -45,63 +39,38 @@ def get_market_status():
     return "☀️ MARKET OPEN"
 
 def calculate_vwap(df):
-    """ חישוב VWAP - המדד של המוסדיים """
     v = df['Volume'].values
     p = df['Close'].values
-    # חישוב מצטבר של מחיר כפול ווליום, חלקי ווליום מצטבר
     return df.assign(VWAP=(p * v).cumsum() / v.cumsum())
 
-def identify_patterns(df):
-    """ זיהוי תבניות נרות יפניים (Price Action) """
-    # נר פטיש (Hammer) - היפוך למעלה
-    # גוף קטן, צללית תחתונה ארוכה
-    df['Body'] = abs(df['Close'] - df['Open'])
-    df['Lower_Wick'] = df[['Open', 'Close']].min(axis=1) - df['Low']
-    df['Upper_Wick'] = df['High'] - df[['Open', 'Close']].max(axis=1)
+def analyze_day_structure(df):
+    """ ניתוח עומק למסחר יומי """
+    # אינדיקטורים בסיסיים
+    df['EMA_9'] = df['Close'].ewm(span=9, adjust=False).mean()
+    df['SMA_20'] = df['Close'].rolling(window=20).mean()
     
-    # תנאי לפטיש: צללית תחתונה גדולה פי 2 מהגוף, צללית עליונה קטנה
-    df['Hammer'] = (df['Lower_Wick'] > 2 * df['Body']) & (df['Upper_Wick'] < df['Body'])
+    # RSI
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    df['RSI'] = 100 - (100 / (1 + rs))
     
-    # נר עוטף/בליעה (Bullish Engulfing) - קונים משתלטים
-    # הנר הקודם אדום, הנר הנוכחי ירוק ועוטף את הקודם
-    df['Prev_Open'] = df['Open'].shift(1)
-    df['Prev_Close'] = df['Close'].shift(1)
-    df['Bullish_Engulfing'] = (df['Open'] < df['Prev_Close']) & (df['Close'] > df['Prev_Open']) & (df['Close'] > df['Open']) & (df['Prev_Open'] > df['Prev_Close'])
-    
-    return df
-
-def calculate_advanced_indicators(df):
-    try:
-        # VWAP
-        df = calculate_vwap(df)
-        
-        # תבניות נרות
-        df = identify_patterns(df)
-        
-        # ממוצעים נעים
-        df['EMA_9'] = df['Close'].ewm(span=9, adjust=False).mean()
-        df['SMA_20'] = df['Close'].rolling(window=20).mean()
-        df['SMA_50'] = df['Close'].rolling(window=50).mean()
-        df['SMA_200'] = df['Close'].rolling(window=200).mean()
-        
-        # זיהוי פריצה (Breakout): הגבוה של 20 הימים האחרונים
-        df['20_Day_High'] = df['High'].rolling(window=20).max()
-        
-        # RSI & ATR
-        delta = df['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        df['RSI'] = 100 - (100 / (1 + rs))
-        
-        df['TR'] = np.maximum((df['High'] - df['Low']), 
+    # ATR (תנודתיות)
+    df['TR'] = np.maximum((df['High'] - df['Low']), 
                    np.maximum(abs(df['High'] - df['Close'].shift(1)), 
                    abs(df['Low'] - df['Close'].shift(1))))
-        df['ATR'] = df['TR'].rolling(14).mean()
-        
-        return df
-    except:
-        return pd.DataFrame()
+    df['ATR'] = df['TR'].rolling(14).mean()
+    
+    # זיהוי נר פטיש (Hammer) - להיפוך
+    df['Body'] = abs(df['Close'] - df['Open'])
+    df['Lower_Wick'] = df[['Open', 'Close']].min(axis=1) - df['Low']
+    df['Hammer'] = (df['Lower_Wick'] > 2 * df['Body']) & (df['RSI'] < 35)
+    
+    # זיהוי פריצה של הגבוה היומי (של 20 יום אחרונים)
+    df['20_Day_High'] = df['High'].rolling(window=20).max()
+    
+    return df
 
 def scan_market():
     results = []
@@ -117,101 +86,85 @@ def scan_market():
             
             stock = yf.Ticker(ticker)
             
-            # בדיקת נתונים
+            # --- שלב 1: האם המניה חיה היום? ---
             try:
-                df = stock.history(period="6mo", interval="1d")
-                if df.empty or len(df) < 50:
+                # מושכים גרף יומי (לניתוח כללי) + גרף תוך יומי (אם יש)
+                df = stock.history(period="3mo", interval="1d")
+                if df.empty or len(df) < 30:
                     skipped_count += 1
                     continue
                 
-                # סינון בסיסי
-                if df['Close'].iloc[-1] < 0.5:
+                # בדיקת מחיר מינימום
+                last_price = df['Close'].iloc[-1]
+                if last_price < 0.5: 
                     skipped_count += 1
                     continue
-                    
-                info = stock.info
-                float_shares = info.get('floatShares', 1000000000)
+
+                # בדיקת ווליום יחסי (האם יש עניין היום?)
+                avg_vol = df['Volume'].rolling(20).mean().iloc[-1]
+                last_vol = df['Volume'].iloc[-1]
+                vol_ratio = last_vol / avg_vol if avg_vol > 0 else 0
+                
             except:
                 skipped_count += 1
                 continue
 
-            # --- הפעלת המנוע המתקדם ---
-            df = calculate_advanced_indicators(df)
+            # --- שלב 2: הפעלת המנוע ---
+            df = calculate_vwap(df)
+            df = analyze_day_structure(df)
+            
             last = df.iloc[-1]
-            prev = df.iloc[-2]
-            price = last['Close']
             
-            # --- ועדת ההשקעות (The Investment Committee) ---
-            score = 0
+            # --- סיווג לאסטרטגיות (Day Strategies) ---
+            strategy = "NONE"
             reasons = []
-            setup_type = "None"
+            score = 0
             
-            # 1. מבחן ה-VWAP (האם אנחנו בצד הנכון של הכסף?)
-            # אם המחיר מעל ה-VWAP, הקונים שולטים
-            if price > last['VWAP']:
-                score += 20
-                reasons.append("Above VWAP (Institutions Bullish)")
+            # אסטרטגיה 1: 🔥 Momentum (ווליום + מעל VWAP)
+            if vol_ratio > 1.5 and last_price > last['VWAP']:
+                strategy = "MOMENTUM"
+                score += 30
+                reasons.append(f"Vol x{vol_ratio:.1f}")
+                reasons.append("Above VWAP")
             
-            # 2. מבחן הפריצה (Breakout)
-            # האם שברנו את השיא של החודש האחרון?
-            if price >= last['20_Day_High'] * 0.98: # קרוב מאוד לפריצה או פורץ
-                score += 25
-                reasons.append("🚨 20-Day Breakout")
-                setup_type = "BREAKOUT"
-            
-            # 3. מבחן ה-Price Action (נרות)
-            if last['Hammer']:
-                score += 15
-                reasons.append("🕯️ Hammer Candle")
-            if last['Bullish_Engulfing']:
-                score += 15
-                reasons.append("🕯️ Engulfing Candle")
+            # אסטרטגיה 2: 🚨 Breakout (פריצת שיא)
+            # אם המחיר קרוב מאוד לשיא של 20 יום (או שבר אותו)
+            if last_price >= last['20_Day_High'] * 0.98:
+                strategy = "BREAKOUT"
+                score += 40
+                reasons.append("Testing 20-Day High")
                 
-            # 4. מבחן המגמה הגדולה (Trend Alignment)
-            if price > last['SMA_50'] and last['SMA_50'] > last['SMA_200']:
-                score += 15
-                reasons.append("Golden Trend")
-            
-            # 5. ווליום חריג (Smart Money Footprint)
-            avg_vol = df['Volume'].rolling(20).mean().iloc[-1]
-            vol_ratio = last['Volume'] / avg_vol
-            if vol_ratio > 1.5:
-                score += 15
-                reasons.append(f"Big Volume (x{vol_ratio:.1f})")
+            # אסטרטגיה 3: 📉 Reversal (היפוך למעלה)
+            # RSI נמוך + נר פטיש
+            if last['Hammer']:
+                strategy = "REVERSAL"
+                score += 25
+                reasons.append("Hammer Candle")
+                reasons.append(f"RSI {last['RSI']:.0f} (Oversold)")
 
-            # --- החלטה סופית ---
-            
-            # מניות Low Float מקבלות יחס מיוחד למסחר יומי
-            if float_shares < 20000000 and vol_ratio > 2.0:
-                 setup_type = "MOMENTUM"
-                 score += 10
-
-            action = "WATCH"
-            if score >= 80: action = "💎 STRONG BUY"
-            elif score >= 60: action = "🟢 BUY"
-            
-            # חישוב יעדים מתקדם
-            stop_loss = price - (last['ATR'] * 1.5)
-            # אם יש פריצה, היעד הוא רחוק יותר
-            target_mult = 5.0 if setup_type == "BREAKOUT" else 3.0
-            target = price + (last['ATR'] * target_mult)
-            potential = ((target - price) / price) * 100
-            
-            # רק אם יש לפחות סיבה טובה אחת
-            if score >= 50:
-                results.append({
-                    "Ticker": ticker,
-                    "Type": setup_type if setup_type != "None" else "TREND",
-                    "Price": price,
-                    "Action": action,
-                    "Stop": stop_loss,
-                    "Target": target,
-                    "Potential": f"+{potential:.1f}%",
-                    "Score": score,
-                    "Reasons": ", ".join(reasons)
-                })
-            else:
+            # אם לא מצאנו כלום - דלג
+            if strategy == "NONE":
                 skipped_count += 1
+                continue
+
+            # --- ניהול סיכונים ---
+            # סטופ צמוד למסחר יומי (1.5 ATR)
+            stop_loss = last_price - (last['ATR'] * 1.5)
+            # יעד רווח (פי 3 מהסיכון)
+            target = last_price + (last['ATR'] * 4.5)
+            
+            potential = ((target - last_price) / last_price) * 100
+            
+            results.append({
+                "Ticker": ticker,
+                "Strategy": strategy,
+                "Price": last_price,
+                "Stop": stop_loss,
+                "Target": target,
+                "Potential": f"+{potential:.1f}%",
+                "Reasons": ", ".join(reasons),
+                "Score": score
+            })
             
         except:
             continue
@@ -220,86 +173,101 @@ def scan_market():
     status_text.empty()
     return pd.DataFrame(results), skipped_count
 
-def plot_pro_chart(ticker, stop, target):
+def plot_day_chart(ticker, stop, target):
     try:
         stock = yf.Ticker(ticker)
-        df = stock.history(period="6mo", interval="1d")
-        df = calculate_vwap(df) # חישוב לצורך הגרף
+        # גרף קצר טווח
+        df = stock.history(period="1mo", interval="1d")
+        df = calculate_vwap(df)
         
-        fig, ax = plt.subplots(figsize=(10, 5))
+        fig, ax = plt.subplots(figsize=(10, 4))
         
         # מחיר
-        ax.plot(df.index, df['Close'], color='black', linewidth=1.5, label='Price')
+        ax.plot(df.index, df['Close'], color='black', label='Price')
+        # VWAP
+        ax.plot(df.index, df['VWAP'], color='#9b59b6', linestyle='-', alpha=0.8, label='VWAP')
         
-        # VWAP - קו סגול (מוסדיים)
-        ax.plot(df.index, df['VWAP'], color='purple', linestyle='-', alpha=0.6, linewidth=1, label='VWAP (Inst. Level)')
-        
-        # אזורי מסחר
-        ax.axhline(stop, color='red', linestyle='--', label='Stop Loss')
+        # קווים
+        ax.axhline(stop, color='red', linestyle='--', label='Stop')
         ax.axhline(target, color='green', linestyle='--', label='Target')
         
-        ax.set_title(f"{ticker} Professional Analysis")
+        ax.set_title(f"{ticker} Day Analysis")
         ax.legend()
-        ax.grid(True, alpha=0.2)
+        ax.grid(True, alpha=0.3)
         return fig
     except:
         return None
 
 # ==========================================
-# 🖥️ UI - ממשק מקצועי
+# 🖥️ UI
 # ==========================================
-st.title("🏛️ AI Sniper - Wall St. Edition")
-st.caption("Criteria: VWAP, Price Action, Breakouts, Smart Money Volume")
-
+st.title("⚡ Day Trader Pro")
 status = get_market_status()
-st.info(f"Market Status: {status}")
+st.caption(f"Status: {status} | Mode: Intraday Only | No Swing")
 
-if st.button("🚀 RUN INSTITUTIONAL SCAN", type="primary"):
-    with st.spinner('Analyzing Price Action & Institutional Levels...'):
+if st.button("🚀 SCAN DAY OPPORTUNITIES", type="primary"):
+    with st.spinner('Hunting High Volume & Breakouts...'):
         df, skipped = scan_market()
         
         if not df.empty:
             df = df.sort_values(by='Score', ascending=False)
             
-            # חלוקה לקטגוריות מסחר
-            tab1, tab2, tab3 = st.tabs(["💎 Top Picks", "🚨 Breakouts", "🌊 Momentum"])
+            # יצירת לשוניות לפי סוג האסטרטגיה
+            t1, t2, t3 = st.tabs(["🔥 Momentum", "🚨 Breakouts", "📉 Reversals (Dip)"])
             
-            # 1. Top Picks (הכי בטוחות)
-            with tab1:
-                top = df[df['Score'] >= 75]
-                if not top.empty:
-                    for idx, row in top.iterrows():
-                        with st.expander(f"💎 {row['Ticker']} | Score: {row['Score']} | {row['Potential']}", expanded=True):
+            # 1. Momentum
+            with t1:
+                mom = df[df['Strategy'] == "MOMENTUM"]
+                if not mom.empty:
+                    for i, row in mom.iterrows():
+                        with st.expander(f"🔥 {row['Ticker']} | Est. {row['Potential']}", expanded=True):
                             c1, c2 = st.columns([1, 2])
                             with c1:
-                                st.markdown(f"**Price:** ${row['Price']:.2f}")
+                                st.write(f"**Price:** ${row['Price']:.2f}")
                                 st.markdown(f"**Target:** :green[${row['Target']:.2f}]")
                                 st.markdown(f"**Stop:** :red[${row['Stop']:.2f}]")
                             with c2:
-                                st.success(f"**Thesis:** {row['Reasons']}")
-                                fig = plot_pro_chart(row['Ticker'], row['Stop'], row['Target'])
+                                st.info(f"Why: {row['Reasons']}")
+                                fig = plot_day_chart(row['Ticker'], row['Stop'], row['Target'])
                                 if fig: st.pyplot(fig)
                 else:
-                    st.info("No 'Strong Buy' candidates meeting institutional criteria.")
+                    st.info("No pure momentum setups right now.")
 
-            # 2. Breakouts (פריצות)
-            with tab2:
-                breakouts = df[df['Type'] == "BREAKOUT"]
-                if not breakouts.empty:
-                    st.dataframe(breakouts[['Ticker', 'Price', 'Potential', 'Reasons']])
+            # 2. Breakouts
+            with t2:
+                brk = df[df['Strategy'] == "BREAKOUT"]
+                if not brk.empty:
+                    for i, row in brk.iterrows():
+                        with st.expander(f"🚨 {row['Ticker']} | Est. {row['Potential']}", expanded=True):
+                            c1, c2 = st.columns([1, 2])
+                            with c1:
+                                st.write(f"**Price:** ${row['Price']:.2f}")
+                                st.markdown(f"**Target:** :green[${row['Target']:.2f}]")
+                                st.markdown(f"**Stop:** :red[${row['Stop']:.2f}]")
+                            with c2:
+                                st.success(f"Why: {row['Reasons']}")
+                                fig = plot_day_chart(row['Ticker'], row['Stop'], row['Target'])
+                                if fig: st.pyplot(fig)
                 else:
-                    st.info("No stocks breaking 20-day highs right now.")
-            
-            # 3. Momentum (למסחר יומי מהיר)
-            with tab3:
-                mom = df[df['Type'] == "MOMENTUM"]
-                if not mom.empty:
-                    st.dataframe(mom[['Ticker', 'Price', 'Potential', 'Reasons']])
+                    st.info("No stocks breaking highs right now.")
+
+            # 3. Reversals
+            with t3:
+                rev = df[df['Strategy'] == "REVERSAL"]
+                if not rev.empty:
+                    for i, row in rev.iterrows():
+                        with st.expander(f"📉 {row['Ticker']} (Buy the Dip)", expanded=True):
+                            c1, c2 = st.columns([1, 2])
+                            with c1:
+                                st.write(f"**Price:** ${row['Price']:.2f}")
+                                st.markdown(f"**Target:** :green[${row['Target']:.2f}]")
+                                st.markdown(f"**Stop:** :red[${row['Stop']:.2f}]")
+                            with c2:
+                                st.warning(f"Why: {row['Reasons']}")
+                                fig = plot_day_chart(row['Ticker'], row['Stop'], row['Target'])
+                                if fig: st.pyplot(fig)
                 else:
-                    st.info("No high-volume momentum stocks found.")
+                    st.info("No reversal patterns found.")
                     
-            st.divider()
-            st.caption(f"Filtered out {skipped} stocks that didn't meet professional standards.")
-            
         else:
-            st.error("No stocks met the strict professional criteria.")
+            st.error("No setups found. Market might be quiet.")
