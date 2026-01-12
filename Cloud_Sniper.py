@@ -3,11 +3,10 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from datetime import datetime
-import pytz
+import time # הוספנו מודול זמן להשהיות
 
 # ==========================================
-# ⚙️ הגדרות ענן
+# ⚙️ הגדרות ענן מתקדמות
 # ==========================================
 st.set_page_config(page_title="AI Sniper Cloud", page_icon="☁️", layout="wide")
 
@@ -47,6 +46,8 @@ def calculate_adx(df, n=14):
 
 def scan_market():
     results = []
+    failed_tickers = [] # רשימה למעקב אחרי כשלונות
+    
     progress_bar = st.progress(0)
     status_text = st.empty()
     
@@ -57,17 +58,35 @@ def scan_market():
             status_text.text(f"Scanning {ticker} ({i+1}/{total})...")
             progress_bar.progress((i + 1) / total)
             
-            stock = yf.Ticker(ticker)
-            info = stock.info
-            float_shares = info.get('floatShares', 1000000000)
-            if float_shares is None: float_shares = 1000000000
+            # --- מנגנון הגנה נגד חסימות ---
+            time.sleep(0.1) 
             
-            short_percent = info.get('shortPercentOfFloat', 0)
+            stock = yf.Ticker(ticker)
+            
+            # בדיקה מהירה אם המניה קיימת
+            try:
+                info = stock.info
+                float_shares = info.get('floatShares', 1000000000)
+                short_percent = info.get('shortPercentOfFloat', 0)
+            except:
+                float_shares = 1000000000
+                short_percent = 0
+            
+            if float_shares is None: float_shares = 1000000000
             if short_percent is None: short_percent = 0
             
+            # הורדת נתונים
             df = stock.history(period="6mo", interval="1h")
-            if df.empty or len(df) < 60: continue
+            
+            if df.empty:
+                failed_tickers.append(f"{ticker}: No Data (Empty)")
+                continue
+                
+            if len(df) < 60:
+                failed_tickers.append(f"{ticker}: Not enough history (<60)")
+                continue
 
+            # חישובים
             df['ADX'], df['ATR'] = calculate_adx(df)
             df['SMA_20'] = df['Close'].rolling(window=20).mean()
             df['STD_20'] = df['Close'].rolling(window=20).std()
@@ -134,25 +153,23 @@ def scan_market():
                 "Reasons": ", ".join(reasons)
             })
             
-        except Exception:
+        except Exception as e:
+            failed_tickers.append(f"{ticker}: Error ({str(e)})")
             continue
             
     progress_bar.empty()
     status_text.empty()
-    return pd.DataFrame(results)
+    return pd.DataFrame(results), failed_tickers
 
 def plot_chart(ticker, stop_loss, take_profit):
     try:
         stock = yf.Ticker(ticker)
-        df = stock.history(period="3mo", interval="1d") # גרף יומי ברור יותר
+        df = stock.history(period="3mo", interval="1d")
         
         fig, ax = plt.subplots(figsize=(10, 4))
         ax.plot(df.index, df['Close'], label='Price', color='black')
-        
-        # קווי מסחר
         ax.axhline(stop_loss, color='red', linestyle='--', label=f'Stop: {stop_loss:.2f}')
         ax.axhline(take_profit, color='green', linestyle='--', label=f'Target: {take_profit:.2f}')
-        
         ax.set_title(f"{ticker} Analysis")
         ax.legend()
         ax.grid(True, alpha=0.3)
@@ -166,23 +183,23 @@ def plot_chart(ticker, stop_loss, take_profit):
 st.title("☁️ AI Sniper Cloud Edition")
 
 if st.button("🚀 START SCAN NOW", type="primary"):
-    with st.spinner('Analyzing Market Data...'):
-        df = scan_market()
+    with st.spinner('Analyzing Market Data (This may take a moment due to anti-block delay)...'):
+        df, failed_list = scan_market()
         
         if not df.empty:
             df = df.sort_values(by='Prob', ascending=False)
             
-            # 1. סטטיסטיקות
+            # סטטיסטיקות
             active = df[df['Action'] != "💤 SLEEPING"]
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Total Scanned", len(df))
+            c1.metric("Successfully Scanned", len(df))
             c2.metric("💎 Opportunities", len(active[active['Action'].str.contains("BUY")]))
             c3.metric("🔥 Low Float", len(df[df['Float(M)'] < 20]))
-            c4.metric("Avg Prob", f"{active['Prob'].mean():.1f}%")
+            c4.metric("Failed/Skipped", len(failed_list))
             
             st.divider()
             
-            # 2. טבלה
+            # טבלה ראשית
             st.subheader("📊 Live Results")
             def highlight_rows(val):
                 if 'STRONG' in str(val): return 'background-color: #28a745; color: white'
@@ -196,7 +213,7 @@ if st.button("🚀 START SCAN NOW", type="primary"):
                 use_container_width=True
             )
             
-            # 3. גרפים (החלק החדש!)
+            # גרפים
             st.divider()
             st.subheader("📸 Top Charts (Buy Signals)")
             
@@ -212,6 +229,12 @@ if st.button("🚀 START SCAN NOW", type="primary"):
                         st.write(f"**Reasons:** {row['Reasons']}")
             else:
                 st.info("No charts to display (No Buy signals found).")
+            
+            # רשימת המניות שנכשלו (לצורך ניקוי)
+            if failed_list:
+                with st.expander("⚠️ View Failed/Skipped Tickers (Clean your list)"):
+                    st.write(failed_list)
+                    st.caption("These stocks either don't exist, have no data, or were blocked.")
                 
         else:
             st.error("No data found.")
