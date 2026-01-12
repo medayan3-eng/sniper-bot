@@ -7,9 +7,9 @@ from datetime import datetime, timedelta
 import pytz
 
 # ==========================================
-# ⚙️ הגדרות - גרסה 17.0 (Pre-Market Commander)
+# ⚙️ הגדרות - גרסה 17.5 (News & Gaps)
 # ==========================================
-st.set_page_config(page_title="Pre-Market Commander", page_icon="🌅", layout="wide")
+st.set_page_config(page_title="Pre-Market Commander", page_icon="📰", layout="wide")
 
 # רשימת המניות (כולל הכל)
 TICKERS = [
@@ -37,6 +37,28 @@ def get_data_status():
         return "🌅 PRE-MARKET (16:00-16:30 IL)", True
     return "☀️ MARKET OPEN", False
 
+def get_latest_news(stock_obj):
+    """ משיכת הכותרת האחרונה """
+    try:
+        news = stock_obj.news
+        if news and len(news) > 0:
+            latest = news[0]
+            title = latest['title']
+            publisher = latest['publisher']
+            link = latest['link']
+            # בדיקת מילות מפתח חיוביות/שליליות בכותרת
+            sentiment = "neutral"
+            title_lower = title.lower()
+            if any(x in title_lower for x in ['beat', 'record', 'jump', 'up', 'surge', 'agreement', 'approval']):
+                sentiment = "positive"
+            elif any(x in title_lower for x in ['miss', 'down', 'drop', 'fall', 'lawsuit', 'fail', 'investigation']):
+                sentiment = "negative"
+                
+            return title, publisher, link, sentiment
+        return "No recent news found", "", "", "neutral"
+    except:
+        return "News unavailable", "", "", "neutral"
+
 def scan_market():
     results = []
     skipped_count = 0
@@ -53,61 +75,48 @@ def scan_market():
             
             stock = yf.Ticker(ticker)
             
-            # --- הטריק: משיכת נתונים כולל Pre-Market ---
-            # interval=15m נותן לנו לראות את הקפיצה של הבוקר
+            # --- משיכת נתונים כולל Pre-Market ---
             df = stock.history(period="5d", interval="15m", prepost=True)
             
             if df.empty or len(df) < 10:
                 skipped_count += 1
                 continue
             
-            # מחיר נוכחי (הכי עדכני שיש)
+            # מחיר נוכחי
             current_price = df['Close'].iloc[-1]
             
-            # מחיר סגירה של אתמול (כדי לחשב GAP)
-            # אנחנו לוקחים את המחיר האחרון של יום המסחר הקודם
-            # הדרך הכי פשוטה: למצוא את המקסימום של אתמול או הסגירה האחרונה לפני היום
-            yesterday_close = df['Close'].iloc[-15] # בערך לפני יום מסחר, לצורך הערכה
-            # חישוב מדויק יותר ל-Gap:
-            # אם אנחנו בפרה-מרקט, הסגירה של אתמול היא ה-Close של הנר האחרון ביום הקודם
-            # לצורך הפשטות נשווה ללפני כמה נרות
+            # מחיר סגירה של אתמול (לחישוב GAP)
+            # לוקחים את הנתון מלפני יום מסחר (בערך) כדי לדלג על הפרי-מרקט של היום
+            # פתרון חכם: לוקחים את ה-Close של השעה 16:00 אתמול אם אפשר, או פשוט אחורה
+            yesterday_close = df['Close'].iloc[-16] # בערך יום אחורה בנרות של 15 דק
             
             gap_percent = ((current_price - yesterday_close) / yesterday_close) * 100
-            
-            # בדיקת ווליום אחרון (האם יש מסחר עכשיו?)
             last_vol = df['Volume'].iloc[-1]
             
-            # --- לוגיקת החלטה (Decision Engine) ---
+            # --- משיכת חדשות ---
+            news_title, news_pub, news_link, sentiment = get_latest_news(stock)
+            
+            # --- לוגיקה ---
             action = "IGNORE"
             instruction = ""
             reasons = []
             
-            # 1. 🚀 מניה שטסה ב-Pre-Market (מעל 3% עלייה)
-            if gap_percent > 3.0:
-                action = "🚀 GAP UP"
-                if gap_percent > 15.0:
-                    instruction = "⚠️ RISKY! Wait for Pullback" # עלתה יותר מדי, מסוכן
+            # 1. מניה שזזה חזק (GAP)
+            if abs(gap_percent) > 3.0:
+                action = "🚀 GAP MOVER" if gap_percent > 0 else "📉 GAP DROP"
+                if gap_percent > 0:
+                    instruction = "Check News -> Buy Dip"
                 else:
-                    instruction = "⚡ BUY NOW / LIMIT" # עלייה בריאה
-                reasons.append(f"Gapped Up +{gap_percent:.1f}%")
+                    instruction = "Watch for Reversal"
+                reasons.append(f"Gap {gap_percent:+.1f}%")
             
-            # 2. 📉 מניה שירדה חזק (הזדמנות לתיקון?)
-            elif gap_percent < -3.0:
-                action = "📉 GAP DOWN"
-                instruction = "👀 WATCH FOR BOUNCE"
-                reasons.append(f"Dropped {gap_percent:.1f}%")
-            
-            # 3. 👀 מניה שקטה אבל עם ווליום (מתבשלת)
-            elif last_vol > 5000: # יש ווליום בפרה מרקט
-                action = "👀 ACTIVE PRE-MARKET"
-                instruction = "⏳ WAIT FOR OPEN BREAKOUT"
-                reasons.append("High Pre-Market Volume")
-            
-            # חישוב יעדים טכניים
-            stop_loss = current_price * 0.95 # 5% סטופ
-            target = current_price * 1.10    # 10% יעד ראשוני
-            
-            # סינון: מציגים רק אם יש אקשן (GAP או ווליום)
+            # 2. מניה עם ווליום חריג בבוקר
+            elif last_vol > 10000:
+                action = "👀 HIGH VOL"
+                instruction = "Wait for Breakout"
+                reasons.append("Active Pre-Market Volume")
+                
+            # סינון: רק אם יש אקשן או חדשות דרמטיות
             if action != "IGNORE":
                 results.append({
                     "Ticker": ticker,
@@ -115,8 +124,10 @@ def scan_market():
                     "Instruction": instruction,
                     "Price": current_price,
                     "Gap": gap_percent,
-                    "Stop": stop_loss,
-                    "Target": target,
+                    "News_Title": news_title,
+                    "News_Pub": news_pub,
+                    "News_Link": news_link,
+                    "Sentiment": sentiment,
                     "Reasons": ", ".join(reasons)
                 })
             else:
@@ -133,13 +144,13 @@ def scan_market():
 def plot_gap_chart(ticker):
     try:
         stock = yf.Ticker(ticker)
-        # שים לב: prepost=True חובה כדי לראות את הגרף עכשיו!
+        # גרף עם Pre-Market
         df = stock.history(period="2d", interval="5m", prepost=True)
         
         fig, ax = plt.subplots(figsize=(10, 4))
-        ax.plot(df.index, df['Close'], color='blue', label='Price (Inc. Pre-Market)')
+        ax.plot(df.index, df['Close'], color='#2980b9', linewidth=1.5, label='Price (Inc. Pre-Market)')
         
-        ax.set_title(f"{ticker} - Last 2 Days (With Pre-Market)")
+        ax.set_title(f"{ticker} - Live Price Action")
         ax.grid(True, alpha=0.3)
         ax.legend()
         return fig
@@ -149,49 +160,52 @@ def plot_gap_chart(ticker):
 # ==========================================
 # 🖥️ UI
 # ==========================================
-st.title("🌅 Pre-Market Commander")
-st.caption("Designed for 16:00-16:30 Israel Time | Live Pre-Market Data")
+st.title("🌅 Pre-Market Commander + News")
+st.caption("Live Data (16:00 IL) | News Analysis | Gap Detection")
 
 df, status = scan_market()
-st.info(f"🕒 Time Zone Status: **{status}**")
+st.info(f"🕒 Status: **{status}**")
 
 if not df.empty:
-    df = df.sort_values(by='Gap', ascending=False)
+    df = df.sort_values(by='Gap', ascending=False, key=abs) # מיון לפי גודל התנועה (חיובי או שלילי)
     
-    # לשוניות לפי סוג הפעולה
-    tab1, tab2 = st.tabs(["🚀 ACTION NOW (Gappers)", "👀 WATCHLIST (Wait)"])
+    # חלוקה ללשוניות
+    tab1, tab2 = st.tabs(["🚀 ACTION LIST", "📋 WATCHLIST"])
     
-    # 1. מניות שזזות עכשיו
     with tab1:
-        gappers = df[df['Action'].str.contains("GAP")]
-        if not gappers.empty:
-            for i, row in gappers.iterrows():
-                # צבעים לפי סוג ההוראה
-                color = "green" if "BUY" in row['Instruction'] else "orange"
+        # מניות שזזות חזק (מעל 3% או מתחת ל-3%)
+        movers = df[abs(df['Gap']) > 3.0]
+        if not movers.empty:
+            for i, row in movers.iterrows():
+                # אייקון לפי חדשות
+                news_icon = "📰"
+                if row['Sentiment'] == 'positive': news_icon = "🟢 Good News:"
+                if row['Sentiment'] == 'negative': news_icon = "🔴 Bad News:"
                 
-                with st.expander(f"{row['Action']} {row['Ticker']} | {row['Gap']:.1f}% | ${row['Price']:.2f}", expanded=True):
-                    st.markdown(f"### 💡 Instruction: :{color}[**{row['Instruction']}**]")
+                with st.expander(f"{row['Action']} {row['Ticker']} | {row['Gap']:+.1f}% | ${row['Price']:.2f}", expanded=True):
+                    
+                    # הצגת חדשות מובלטת
+                    st.info(f"**{news_icon} {row['News_Title']}**\n\n*{row['News_Pub']}*")
                     
                     c1, c2 = st.columns(2)
                     with c1:
-                        st.write(f"**Target:** ${row['Target']:.2f}")
-                        st.write(f"**Stop:** ${row['Stop']:.2f}")
+                        st.write(f"**Strategy:** {row['Instruction']}")
+                        if row['News_Link']:
+                            st.markdown(f"[Read Full Story]({row['News_Link']})")
                     with c2:
-                        st.caption(f"Reason: {row['Reasons']}")
+                        st.caption(f"Tech Reason: {row['Reasons']}")
                     
-                    # גרף לכל מניה - חובה!
                     fig = plot_gap_chart(row['Ticker'])
                     if fig: st.pyplot(fig)
         else:
-            st.info("No big gappers found yet.")
+            st.info("No major gaps found yet.")
 
-    # 2. מניות למעקב
     with tab2:
-        watch = df[~df['Action'].str.contains("GAP")]
+        watch = df[abs(df['Gap']) <= 3.0]
         if not watch.empty:
-            st.dataframe(watch[['Ticker', 'Price', 'Instruction', 'Reasons']])
+            st.dataframe(watch[['Ticker', 'Price', 'Gap', 'News_Title']])
         else:
-            st.info("No active pre-market stocks found.")
+            st.info("No active stocks.")
 
 else:
     if st.button("🚀 SCAN PRE-MARKET"):
