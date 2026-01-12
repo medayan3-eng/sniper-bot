@@ -4,13 +4,13 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import time 
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 
 # ==========================================
-# ⚙️ הגדרות - גרסה 11.0 (Liquidity Guard)
+# ⚙️ הגדרות - גרסה 12.0 (Hybrid Sniper)
 # ==========================================
-st.set_page_config(page_title="AI Sniper Pro", page_icon="🦅", layout="wide")
+st.set_page_config(page_title="AI Sniper Hybrid", page_icon="🦅", layout="wide")
 
 # רשימת המניות (המעודכנת)
 TICKERS = [
@@ -56,19 +56,26 @@ def check_data_delay(stock_df):
 
 def calculate_indicators(df):
     try:
-        df['EMA_9'] = df['Close'].ewm(span=9, adjust=False).mean()
+        # ממוצעים לטרנד (Swing)
         df['SMA_20'] = df['Close'].rolling(window=20).mean()
+        df['SMA_50'] = df['Close'].rolling(window=50).mean()
         
+        # ממוצע מהיר ליום (Day)
+        df['EMA_9'] = df['Close'].ewm(span=9, adjust=False).mean()
+        
+        # RSI
         delta = df['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss
         df['RSI'] = 100 - (100 / (1 + rs))
         
+        # ATR & Volatility
         df['TR'] = np.maximum((df['High'] - df['Low']), 
                    np.maximum(abs(df['High'] - df['Close'].shift(1)), 
                    abs(df['Low'] - df['Close'].shift(1))))
         df['ATR'] = df['TR'].rolling(14).mean()
+        
         return df
     except:
         return pd.DataFrame()
@@ -89,104 +96,103 @@ def scan_market():
             
             stock = yf.Ticker(ticker)
             
-            # --- פילטר 1: ווליום ממוצע (מסננת זבל) ---
+            # --- פילטר נזילות ---
             try:
                 info = stock.info
                 avg_vol_10d = info.get('averageVolume10days', 0)
-                if avg_vol_10d is not None and avg_vol_10d < 50000: # אם פחות מ-50 אלף מניות ביום
+                if avg_vol_10d is not None and avg_vol_10d < 50000:
                     skipped_count += 1
-                    continue # דלג למניה הבאה
-                    
+                    continue
+                
                 float_shares = info.get('floatShares', 1000000000)
                 if float_shares is None: float_shares = 1000000000
             except:
                 skipped_count += 1
                 continue
 
-            # --- משיכת נתונים ---
-            # מושכים נתונים של 5 ימים כדי לקבל ממוצעים טובים
-            df = stock.history(period="5d", interval="30m")
+            # נתונים (קצת יותר היסטוריה בשביל ה-Swing)
+            df = stock.history(period="6mo", interval="1d") # נתונים יומיים לניתוח סווינג
             
-            if df.empty or len(df) < 20:
+            # אם צריך נתונים תוך יומיים למסחר יומי, נמשוך גם אותם
+            df_intraday = stock.history(period="5d", interval="30m")
+            
+            if df.empty or len(df) < 50:
                 skipped_count += 1
                 continue
             
-            # --- פילטר 2: מחיר מינימום ---
-            last_price = df['Close'].iloc[-1]
-            if last_price < 0.5: # מניות מתחת ל-50 סנט זה מסוכן מידי
-                skipped_count += 1
-                continue
-
-            # חישוב אינדיקטורים
+            # חישוב אינדיקטורים על הגרף היומי
             df = calculate_indicators(df)
             last = df.iloc[-1]
-            atr = last['ATR']
             
-            # --- פילטר 3: נזילות רגעית (Liquidity Check) ---
-            # בדיקה: האם בנר האחרון עבר כסף אמיתי?
-            dollar_volume = last['Close'] * last['Volume']
-            liquidity_status = "OK"
-            
-            # אם ב-30 הדקות האחרונות עברו פחות מ-10,000 דולר - זו מניה תקועה
-            if dollar_volume < 10000: 
-                liquidity_status = "⚠️ LOW LIQ"
+            # נתונים בסיסיים
+            price = last['Close']
+            if price < 0.5: 
+                skipped_count += 1
+                continue
 
-            # --- אסטרטגיה ---
-            entry_price = last['High'] + (atr * 0.5)
-            stop_loss = entry_price - (atr * 2.0)
-            take_profit = entry_price + (atr * 4.0)
-            
-            score = 0
+            # --- סיווג אסטרטגיה ---
+            strategy_type = "NONE"
             reasons = []
             
-            if float_shares < 20_000_000:
-                score += 25
-                reasons.append("🔥 Low Float")
+            # 1. בדיקת Swing (מגמה יציבה)
+            # תנאים: המחיר מעל ממוצע 20, ממוצע 20 מעל 50, ומגמה חיובית
+            is_swing = False
+            if price > last['SMA_20'] and last['SMA_20'] > last['SMA_50']:
+                is_swing = True
             
-            if last['Close'] > last['EMA_9']:
-                score += 15
-                reasons.append("📈 Trend UP")
-                
-            if last['RSI'] < 35: 
-                score += 20
-                reasons.append("📉 Oversold")
-            elif last['RSI'] > 50 and last['RSI'] < 70:
-                score += 10
-                reasons.append("⚡ Momentum")
+            # 2. בדיקת Day Trade (תנודתיות ו-ווליום)
+            # משתמשים בנתונים התוך-יומיים אם יש, או ביום האחרון
+            is_day = False
+            vol_ratio = 1.0
+            avg_vol = df['Volume'].rolling(20).mean().iloc[-1]
+            if avg_vol > 0:
+                vol_ratio = last['Volume'] / avg_vol
+            
+            # תנאי יום: ווליום חריג + תנודתיות (ATR) גבוהה ביחס למחיר
+            volatility_pct = (last['ATR'] / price) * 100
+            if vol_ratio > 1.5 and volatility_pct > 3.0:
+                is_day = True
 
-            # בדיקת ווליום יחסי
-            avg_vol_recent = df['Volume'].rolling(20).mean().iloc[-1]
-            if avg_vol_recent > 0 and last['Volume'] > avg_vol_recent * 1.5:
-                score += 25
-                reasons.append("📢 High Vol")
+            # החלטה סופית על סוג
+            if is_day:
+                strategy_type = "☀️ DAY TRADE"
+                reasons.append(f"High Vol (x{vol_ratio:.1f})")
+                reasons.append(f"Volatile ({volatility_pct:.1f}%)")
+            elif is_swing:
+                strategy_type = "📅 SWING"
+                reasons.append("Uptrend (Price > SMA20 > SMA50)")
+            
+            if strategy_type == "NONE":
+                continue # לא מעניין אותנו
 
-            probability = max(0, min(100, score))
-            action = "WAIT"
+            # --- ניהול סיכונים (לפי ATR) ---
+            stop_loss = price - (last['ATR'] * 2.0)
+            take_profit = price + (last['ATR'] * 4.0)
             
-            if probability >= 80: action = "💎 SETUP READY"
-            elif probability >= 65: action = "🟢 WATCH"
+            # ציון
+            score = 50 # ציון התחלתי
+            if is_day and float_shares < 20_000_000: score += 20 # יתרון למסחר יומי
+            if is_swing and last['RSI'] < 70 and last['RSI'] > 50: score += 20 # יתרון לסווינג
+            if vol_ratio > 2.0: score += 15
             
-            # אם הנזילות נמוכה, מבטלים המלצת קנייה
-            if liquidity_status == "⚠️ LOW LIQ":
-                action = "⚠️ STUCK / ILLIQUID"
-                probability = 0
+            probability = min(100, score)
             
-            # אם הציון גבוה, שומרים
-            if probability > 50 or "SETUP" in action:
-                data_status = check_data_delay(df)
-                
-                results.append({
-                    "Ticker": ticker,
-                    "Price": last_price,
-                    "Action": action,
-                    "Entry": entry_price,
-                    "Stop": stop_loss,
-                    "Target": take_profit,
-                    "Liquidity": liquidity_status,
-                    "Status": data_status,
-                    "Prob": probability,
-                    "Reasons": ", ".join(reasons)
-                })
+            # סטטוס נתונים (מהגרף התוך יומי)
+            data_status = "Unknown"
+            if not df_intraday.empty:
+                data_status = check_data_delay(df_intraday)
+
+            results.append({
+                "Ticker": ticker,
+                "Strategy": strategy_type,
+                "Price": price,
+                "Action": "BUY WATCH",
+                "Stop": stop_loss,
+                "Target": take_profit,
+                "Prob": probability,
+                "Status": data_status,
+                "Reasons": ", ".join(reasons)
+            })
             
         except:
             continue
@@ -195,17 +201,30 @@ def scan_market():
     status_text.empty()
     return pd.DataFrame(results), skipped_count
 
-def plot_setup_chart(ticker, entry, stop, target):
+def plot_chart(ticker, strategy, stop, target):
     try:
         stock = yf.Ticker(ticker)
-        df = stock.history(period="1mo", interval="1d")
+        # טווח זמן בגרף לפי האסטרטגיה
+        period = "6mo" if "SWING" in strategy else "1mo"
+        df = stock.history(period=period, interval="1d")
+        
+        # חישוב ממוצעים לציור
+        df['SMA_20'] = df['Close'].rolling(window=20).mean()
+        df['SMA_50'] = df['Close'].rolling(window=50).mean()
+        
         fig, ax = plt.subplots(figsize=(10, 4))
-        ax.plot(df.index, df['Close'], color='black')
-        ax.axhline(entry, color='blue', linestyle='-', label=f'Buy Stop @ {entry:.2f}')
+        ax.plot(df.index, df['Close'], color='black', label='Price')
+        
+        if "SWING" in strategy:
+            ax.plot(df.index, df['SMA_20'], color='orange', label='SMA 20')
+            ax.plot(df.index, df['SMA_50'], color='blue', label='SMA 50')
+            ax.set_title(f"{ticker} - SWING Analysis (Trend Follow)")
+        else:
+            ax.set_title(f"{ticker} - DAY TRADE Setup (Volatility)")
+            
         ax.axhline(stop, color='red', linestyle='--', label='Stop')
         ax.axhline(target, color='green', linestyle='--', label='Target')
         ax.legend()
-        ax.set_title(f"{ticker} Setup")
         ax.grid(True, alpha=0.2)
         return fig
     except:
@@ -214,48 +233,58 @@ def plot_setup_chart(ticker, entry, stop, target):
 # ==========================================
 # 🖥️ UI
 # ==========================================
-st.title("🦅 AI Sniper - Liquidity Guard")
+st.title("🦅 AI Sniper - Hybrid Edition")
+st.caption("Auto-Classifying: Day Trades (Volatility) vs. Swing Trades (Trends)")
 
-status, is_pre = get_market_status()
-st.info(f"🕒 Status: **{status}**")
-if is_pre:
-    st.warning("⚠️ Pre-Market: Use BUY STOP orders only.")
-
-if st.button("🚀 SCAN CLEAN STOCKS", type="primary"):
-    with st.spinner('Filtering junk stocks & Scanning...'):
+if st.button("🚀 CLASSIFY & SCAN", type="primary"):
+    with st.spinner('Analyzing Volatility & Trends...'):
         df, skipped = scan_market()
         
         if not df.empty:
             df = df.sort_values(by='Prob', ascending=False)
             
-            # מדדים
-            valid_setups = df[df['Action'].str.contains("SETUP")]
+            # יצירת לשוניות (Tabs)
+            tab1, tab2 = st.tabs(["☀️ Day Trade (Intraday)", "📅 Swing Trade (Weekly)"])
             
-            c1, c2, c3 = st.columns(3)
-            c1.metric("💎 Prime Setups", len(valid_setups))
-            c2.metric("🗑️ Junk Removed", skipped)
-            c3.metric("Avg Prob", f"{df['Prob'].mean():.1f}%")
+            # --- לשונית 1: מסחר יומי ---
+            with tab1:
+                day_df = df[df['Strategy'].str.contains("DAY")]
+                if not day_df.empty:
+                    st.success(f"Found {len(day_df)} Explosive Day-Trade Setups")
+                    for idx, row in day_df.iterrows():
+                        with st.expander(f"🔥 {row['Ticker']} | ${row['Price']:.2f}", expanded=True):
+                            c1, c2 = st.columns([1, 2])
+                            with c1:
+                                st.markdown(f"**Stop:** :red[${row['Stop']:.2f}]")
+                                st.markdown(f"**Target:** :green[${row['Target']:.2f}]")
+                                st.caption(f"Data: {row['Status']}")
+                            with c2:
+                                st.write(f"**Why:** {row['Reasons']}")
+                                fig = plot_chart(row['Ticker'], "DAY", row['Stop'], row['Target'])
+                                if fig: st.pyplot(fig)
+                else:
+                    st.info("No Day-Trade setups found (Low volatility currently).")
+
+            # --- לשונית 2: סווינג ---
+            with tab2:
+                swing_df = df[df['Strategy'].str.contains("SWING")]
+                if not swing_df.empty:
+                    st.info(f"Found {len(swing_df)} Stable Swing Trends")
+                    for idx, row in swing_df.iterrows():
+                        with st.expander(f"📈 {row['Ticker']} | ${row['Price']:.2f}", expanded=False):
+                            c1, c2 = st.columns([1, 2])
+                            with c1:
+                                st.markdown(f"**Stop:** :red[${row['Stop']:.2f}]")
+                                st.markdown(f"**Target:** :green[${row['Target']:.2f}]")
+                            with c2:
+                                st.write(f"**Trend:** {row['Reasons']}")
+                                fig = plot_chart(row['Ticker'], "SWING", row['Stop'], row['Target'])
+                                if fig: st.pyplot(fig)
+                else:
+                    st.info("No Swing setups found (Market might be choppy).")
             
             st.divider()
+            st.caption(f"Filtered out {skipped} junk/illiquid stocks.")
             
-            if not valid_setups.empty:
-                for idx, row in valid_setups.iterrows():
-                    with st.expander(f"💎 {row['Ticker']} | Buy Stop: ${row['Entry']:.2f}", expanded=True):
-                        c_a, c_b = st.columns([1, 2])
-                        with c_a:
-                            st.markdown(f"**Action:** :green[{row['Action']}]")
-                            st.markdown(f"**Current:** ${row['Price']:.2f}")
-                            st.markdown(f"**Stop:** :red[${row['Stop']:.2f}]")
-                            st.markdown(f"**Target:** :green[${row['Target']:.2f}]")
-                            st.caption(f"Data: {row['Status']}")
-                        with c_b:
-                            fig = plot_setup_chart(row['Ticker'], row['Entry'], row['Stop'], row['Target'])
-                            if fig: st.pyplot(fig)
-                            st.write(f"**Why:** {row['Reasons']}")
-            else:
-                st.info("No high-quality setups found right now (Junk filtered out).")
-            
-            with st.expander("📊 View Watchlist (Lower Probability)"):
-                st.dataframe(df)
         else:
-            st.warning(f"No opportunities found. (Filtered {skipped} junk stocks).")
+            st.warning("No opportunities found.")
