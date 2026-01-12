@@ -8,9 +8,9 @@ from datetime import datetime, timedelta
 import pytz
 
 # ==========================================
-# ⚙️ הגדרות - גרסה 9.1 (גלאי האמת)
+# ⚙️ הגדרות - גרסה 10.0 (Pre-Market Breakout)
 # ==========================================
-st.set_page_config(page_title="AI Sniper Pro", page_icon="🦅", layout="wide")
+st.set_page_config(page_title="AI Sniper X", page_icon="🦅", layout="wide")
 
 # רשימת המניות
 TICKERS = [
@@ -34,46 +34,49 @@ TICKERS = list(set(TICKERS))
 
 # --- פונקציות ליבה ---
 
+def get_market_status():
+    """ בדיקה האם השוק פתוח או בפרה-מרקט """
+    ny_tz = pytz.timezone('America/New_York')
+    now_ny = datetime.now(ny_tz)
+    
+    # שעות מסחר בניו יורק
+    market_open = now_ny.replace(hour=9, minute=30, second=0, microsecond=0)
+    market_close = now_ny.replace(hour=16, minute=0, second=0, microsecond=0)
+    
+    if now_ny < market_open:
+        return "🌅 PRE-MARKET", True
+    elif now_ny > market_close:
+        return "🌙 AFTER-HOURS", False
+    else:
+        return "☀️ MARKET OPEN", False
+
 def check_data_delay(stock_df):
-    """ בדיקה האם המידע מעודכן או באיחור """
     try:
         last_time = stock_df.index[-1]
-        # המרה לאזור זמן ניו יורק
         ny_tz = pytz.timezone('America/New_York')
         now_ny = datetime.now(ny_tz)
-        
-        # אם יש הפרש של יותר מ-20 דקות
         time_diff = now_ny - last_time
-        if time_diff.total_seconds() > 1200: # 20 דקות
-            return "🔴 DELAYED", f"{int(time_diff.total_seconds()/60)}m ago"
-        else:
-            return "🟢 Real-Time", "Live"
+        # אם עברו יותר מ-25 דקות
+        if time_diff.total_seconds() > 1500: 
+            return "🔴 DELAYED"
+        return "🟢 LIVE"
     except:
-        return "❓ Unknown", ""
+        return "❓ Unknown"
 
-def get_latest_news(stock_obj):
+def calculate_indicators(df):
     try:
-        news = stock_obj.news
-        if news and len(news) > 0:
-            return news[0]['title']
-        return "No recent news"
-    except:
-        return "News unavailable"
-
-def calculate_technical_indicators(df):
-    try:
+        # EMA & SMA
         df['EMA_9'] = df['Close'].ewm(span=9, adjust=False).mean()
         df['SMA_20'] = df['Close'].rolling(window=20).mean()
-        df['STD_20'] = df['Close'].rolling(window=20).std()
-        df['Upper'] = df['SMA_20'] + (df['STD_20'] * 2)
-        df['Lower'] = df['SMA_20'] - (df['STD_20'] * 2)
         
+        # RSI
         delta = df['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss
         df['RSI'] = 100 - (100 / (1 + rs))
         
+        # ATR
         df['TR'] = np.maximum((df['High'] - df['Low']), 
                    np.maximum(abs(df['High'] - df['Close'].shift(1)), 
                    abs(df['Low'] - df['Close'].shift(1))))
@@ -87,6 +90,8 @@ def scan_market():
     results = []
     failed_tickers = [] 
     
+    market_phase, is_premarket = get_market_status()
+    
     progress_bar = st.progress(0)
     status_text = st.empty()
     total = len(TICKERS)
@@ -99,100 +104,90 @@ def scan_market():
             
             stock = yf.Ticker(ticker)
             
-            # בדיקת נתונים בסיסית
+            # בדיקת נתונים
             try:
                 info = stock.info
                 float_shares = info.get('floatShares', 1000000000)
-                short_percent = info.get('shortPercentOfFloat', 0)
+                if float_shares is None: float_shares = 1000000000
             except:
                 float_shares = 1000000000
-                short_percent = 0
             
-            if float_shares is None: float_shares = 1000000000
-            
-            # משיכת היסטוריה
-            df = stock.history(period="5d", interval="1h") # לקחנו 5 ימים אחרונים שעתיים
+            # משיכת היסטוריה - טריק לפרה-מרקט
+            # אנחנו מושכים נתונים תוך יומיים כדי לראות את הפעילות האחרונה
+            df = stock.history(period="5d", interval="30m")
             
             if df.empty:
                 failed_tickers.append(f"{ticker}: No Data")
                 continue
 
-            # --- בדיקת האמת (עיכוב) ---
-            data_status, delay_time = check_data_delay(df)
-
-            # חישובים
-            df = calculate_technical_indicators(df)
+            # בדיקת טריות
+            data_status = check_data_delay(df)
+            
+            # חישוב אינדיקטורים
+            df = calculate_indicators(df)
             if df.empty or len(df) < 20: continue
 
             last = df.iloc[-1]
             price = last['Close']
             atr = last['ATR']
             
-            stop_loss = price - (atr * 1.5)
-            take_profit = price + (atr * 3.0)
+            # --- חישוב אסטרטגיה חכם ---
+            
+            # 1. חישוב מחיר כניסה (פריצה)
+            # אם אנחנו בפרה-מרקט, הכניסה היא מעל הגבוה של היום
+            # אם במסחר רגיל, הכניסה היא מעל הגבוה של הנר האחרון + קצת מרווח
+            entry_price = last['High'] + (atr * 0.5) 
+            
+            stop_loss = entry_price - (atr * 2.0)
+            take_profit = entry_price + (atr * 4.0)
             
             score = 0
             reasons = []
             
-            # לוגיקה
+            # פילטרים
             if float_shares < 20_000_000:
-                score += 20
+                score += 25
                 reasons.append("🔥 Low Float")
-            if short_percent > 0.20:
-                score += 15
-                reasons.append("🩳 High Short")
-                
+            
             if last['Close'] > last['EMA_9']:
                 score += 15
-                reasons.append("📈 Above EMA 9")
-            
-            if last['EMA_9'] > last['SMA_20']:
-                score += 15
-                reasons.append("⚡ Uptrend")
+                reasons.append("📈 Trend UP")
                 
-            if last['RSI'] < 30: 
+            if last['RSI'] < 35: 
                 score += 20
-                reasons.append("📉 Oversold")
-            
-            # ווליום
+                reasons.append("📉 Oversold Dip")
+            elif last['RSI'] > 50 and last['RSI'] < 70:
+                score += 10
+                reasons.append("⚡ Momentum")
+
+            # בדיקת ווליום יחסי
             avg_vol = df['Volume'].rolling(20).mean().iloc[-1]
-            vol_ratio = 0
-            if avg_vol > 0:
-                vol_ratio = last['Volume'] / avg_vol
-                if vol_ratio > 2:
-                    score += 20
-                    reasons.append(f"📢 Vol x{vol_ratio:.1f}")
+            if avg_vol > 0 and last['Volume'] > avg_vol * 1.5:
+                score += 25
+                reasons.append("📢 High Volume")
 
             probability = max(0, min(100, score))
             action = "WAIT"
             
-            if probability >= 80: action = "💎 STRONG BUY"
-            elif probability >= 65: action = "🟢 BUY"
-            elif probability <= 20: action = "🔴 SELL"
+            if probability >= 80: action = "💎 SETUP READY"
+            elif probability >= 65: action = "🟢 WATCH"
+            elif probability <= 20: action = "🔴 AVOID"
             
-            if last['Volume'] < 500: # ווליום ממש נמוך
+            # הגנה: אם אין ווליום בכלל
+            if last['Volume'] < 500:
                 action = "💤 SLEEPING"
                 probability = 0
             
-            # אם המידע באיחור, מורידים ציון אמינות
-            if "DELAYED" in data_status:
-                reasons.append("⚠️ Delayed Data")
-
-            news_headline = "No recent news"
-            if probability > 50: 
-                news_headline = get_latest_news(stock)
-
             results.append({
                 "Ticker": ticker,
                 "Price": price,
-                "Data_Status": f"{data_status} ({delay_time})",
+                "Entry_Order": entry_price, # המחיר שבו שמים את הפקודה
                 "Action": action,
                 "Prob": probability,
                 "Stop_Loss": stop_loss,
                 "Take_Profit": take_profit,
                 "Float(M)": float_shares / 1_000_000,
-                "RSI": round(last['RSI'], 1),
-                "News": news_headline,
+                "Status": data_status,
                 "Reasons": ", ".join(reasons)
             })
             
@@ -201,22 +196,22 @@ def scan_market():
             
     progress_bar.empty()
     status_text.empty()
-    return pd.DataFrame(results), failed_tickers
+    return pd.DataFrame(results), market_phase
 
-def plot_advanced_chart(ticker, stop_loss, take_profit):
+def plot_setup_chart(ticker, entry, stop, target):
     try:
         stock = yf.Ticker(ticker)
-        df = stock.history(period="3mo", interval="1d")
-        df['EMA_9'] = df['Close'].ewm(span=9, adjust=False).mean()
-        df['SMA_20'] = df['Close'].rolling(window=20).mean()
+        df = stock.history(period="1mo", interval="1d")
         
         fig, ax = plt.subplots(figsize=(10, 5))
         ax.plot(df.index, df['Close'], label='Price', color='black')
-        ax.plot(df.index, df['EMA_9'], label='EMA 9', color='#007bff', alpha=0.8)
-        ax.plot(df.index, df['SMA_20'], label='SMA 20', color='#ff7f0e', alpha=0.8)
-        ax.axhline(stop_loss, color='red', linestyle='--', label='Stop')
-        ax.axhline(take_profit, color='green', linestyle='--', label='Target')
-        ax.set_title(f"{ticker} Analysis")
+        
+        # ציור קו פקודת הכניסה
+        ax.axhline(entry, color='blue', linestyle='-', linewidth=2, label=f'BUY STOP ORDER @ {entry:.2f}')
+        ax.axhline(stop, color='red', linestyle='--', label='Stop Loss')
+        ax.axhline(target, color='green', linestyle='--', label='Target')
+        
+        ax.set_title(f"{ticker} Trade Setup")
         ax.legend()
         ax.grid(True, alpha=0.2)
         return fig
@@ -226,50 +221,54 @@ def plot_advanced_chart(ticker, stop_loss, take_profit):
 # ==========================================
 # 🖥️ ממשק משתמש
 # ==========================================
-st.title("🦅 AI Sniper - Truth Edition")
-st.info("💡 Pro Tip: Don't day-trade delayed data. Use this for Swing & Trends.")
+st.title("🦅 AI Sniper X - Breakout Edition")
 
-if st.button("🚀 START SCAN", type="primary"):
-    with st.spinner('Checking Data Freshness & Scanning...'):
-        df, failed_list = scan_market()
+# הצגת מצב השוק
+status, is_pre = get_market_status()
+st.info(f"🕒 Market Status: **{status}**")
+if is_pre:
+    st.warning("⚠️ PRE-MARKET STRATEGY: Do not buy at 'Market'. Use 'BUY STOP' orders at the Entry Price shown below.")
+
+if st.button("🚀 SCAN FOR SETUPS", type="primary"):
+    with st.spinner('Calculating Breakout Levels...'):
+        df, phase = scan_market()
         
         if not df.empty:
             df = df.sort_values(by='Prob', ascending=False)
             active = df[df['Action'] != "💤 SLEEPING"]
             
+            # מדדים
             c1, c2, c3 = st.columns(3)
-            c1.metric("Opportunities", len(active[active['Action'].str.contains("BUY")]))
-            c2.metric("Real-Time Tickers", len(df[df['Data_Status'].str.contains("Real")]))
-            c3.metric("Avg Prob", f"{active['Prob'].mean():.1f}%")
+            c1.metric("Valid Setups", len(active[active['Action'].str.contains("SETUP")]))
+            c2.metric("Real-Time Data", len(df[df['Status'].str.contains("LIVE")]))
+            c3.metric("Low Float", len(df[df['Float(M)'] < 20]))
             
             st.divider()
             
-            buy_signals = df[df['Action'].str.contains("BUY")]
+            # הצגת תוצאות
+            setups = df[df['Action'].str.contains("SETUP|WATCH")]
             
-            if not buy_signals.empty:
-                for idx, row in buy_signals.iterrows():
-                    icon = "💎" if "STRONG" in row['Action'] else "🟢"
-                    # בדיקת אזהרה אם המידע לא בזמן אמת
-                    status_color = "green" if "Real" in row['Data_Status'] else "red"
+            if not setups.empty:
+                for idx, row in setups.iterrows():
+                    icon = "💎" if "SETUP" in row['Action'] else "👀"
                     
-                    with st.expander(f"{icon} {row['Ticker']} | {row['Data_Status']}", expanded=True):
+                    with st.expander(f"{icon} {row['Ticker']} | Order Price: ${row['Entry_Order']:.2f}", expanded=True):
                         col1, col2 = st.columns([1, 2])
                         with col1:
-                            st.markdown(f"**Action:** :green[{row['Action']}]")
-                            st.markdown(f"**Price:** ${row['Price']:.2f}")
-                            st.markdown(f"**Stop:** :red[${row['Stop_Loss']:.2f}]")
+                            st.markdown(f"**Current Price:** ${row['Price']:.2f}")
+                            st.markdown(f"**🛑 SET BUY STOP @:** :blue[**${row['Entry_Order']:.2f}**]")
+                            st.markdown(f"**Stop Loss:** :red[${row['Stop_Loss']:.2f}]")
                             st.markdown(f"**Target:** :green[${row['Take_Profit']:.2f}]")
-                            if "DELAYED" in row['Data_Status']:
-                                st.error("⚠️ DATA IS DELAYED! DO NOT SCALP.")
+                            st.caption(f"Data: {row['Status']}")
+                        
                         with col2:
-                            st.info(f"📰 {row['News']}")
-                            fig = plot_advanced_chart(row['Ticker'], row['Stop_Loss'], row['Take_Profit'])
+                            fig = plot_setup_chart(row['Ticker'], row['Entry_Order'], row['Stop_Loss'], row['Take_Profit'])
                             if fig:
                                 st.pyplot(fig)
                                 plt.close(fig)
-                            st.caption(f"Reasoning: {row['Reasons']}")
+                            st.write(f"**Logic:** {row['Reasons']}")
             else:
-                st.warning("No safe setups found.")
+                st.info("No breakouts detected yet. Market might be quiet.")
                 
             with st.expander("📊 Full Data Table"):
                 st.dataframe(df)
