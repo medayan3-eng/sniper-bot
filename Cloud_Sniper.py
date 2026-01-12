@@ -3,26 +3,37 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import time # הוספנו מודול זמן להשהיות
+import time 
 
 # ==========================================
 # ⚙️ הגדרות ענן מתקדמות
 # ==========================================
 st.set_page_config(page_title="AI Sniper Cloud", page_icon="☁️", layout="wide")
 
-# רשימת המניות
+# רשימת המניות המעודכנת (כולל המניות החדשות מהתמונות)
 TICKERS = [
+    # --- הרשימה המקורית ---
     'PLTR', 'RKLB', 'GEV', 'INVZ', 'NVO', 'SMX', 'COHN', 'ASTI', 'NXTT', 'BNAI', 
     'INV', 'SCWO', 'ICON', 'MVO', 'FIEE', 'CD', 'KITT', 'UNTJ', 'RDHL', 'FLXY', 
     'STAI', 'ORGN', 'VIOT', 'BRNF', 'ROMA', 'OPEN', 'MU', 'SOUN', 'BBAI', 'ACLS', 
     'RGTI', 'QUBT', 'RGC', 'GLUE', 'IPSC', 'ERAS', 'MNTS', 'LIMN', 'GPUS', 'ABVE', 
     'VTYX', 'TGL', 'AMOD', 'FBLG', 'SLRX', 'COOT', 'RVMD', 'CLIR', 'GHRS', 'NMRA', 
-    'MOBX', 'IMRX', 'RZLT', 'OLPX', 'OSS', 'BHVN', 'TNGX', 'MTEN', 'ANPA', 'ZJZZT', 
+    'MOBX', 'IMRX', 'RZLT', 'OLPX', 'OSS', 'BHVN', 'TNGX', 'MTEN', 'ANPA', 
     'NBY', 'VLN', 'GP', 'ATGL', 'OPAD', 'VCIG', 'THH', 'GGROW', 'ZNTL', 'ELOG', 
     'ZBAO', 'OPTX', 'CGON', 'MLTX', 'TCGL', 'MREO', 'HAO', 'NCRA', 'INBS', 'SOWG', 
     'QTRX', 'SXTC', 'MTAN', 'PASW', 'ACON', 'AQST', 'BBNX', 'PAPL', 'STSS', 'EDHL', 
-    'JTAI', 'ATRA', 'MGRX', 'GRI', 'WSHP', 'NVVE', 'DRCT', 'BNZI', 'IZM'
+    'JTAI', 'ATRA', 'MGRX', 'GRI', 'WSHP', 'NVVE', 'DRCT', 'BNZI', 'IZM',
+    
+    # --- התוספות החדשות מהתמונות (ללא אופציות) ---
+    'EVTV', 'BDSX', 'SUGP', 'UP', 'SOGP', 'OMH', 'BEAM', 'BARK', 
+    'LYRA', 'LXEO', 'VMAR', 'TSE', 
+    'SLQT', 'CLRB', 'ZBIO', 'STKL', 'UUU', 'AKAN', 'FBRX', 'BIOA', 'HYMC',
+    'LVLU', 'KC', 'ZH', 'SRL', 'DAWN', 'OM', 'RBOT', 
+    'ATEC', 'KUST', 'ANF', 'FLYX', 'STOK', 'GOVX', 'LRHC'
 ]
+
+# הסרת כפילויות אוטומטית ליתר ביטחון
+TICKERS = list(set(TICKERS))
 
 # פונקציות עזר
 def calculate_adx(df, n=14):
@@ -46,7 +57,7 @@ def calculate_adx(df, n=14):
 
 def scan_market():
     results = []
-    failed_tickers = [] # רשימה למעקב אחרי כשלונות
+    failed_tickers = [] 
     
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -63,7 +74,7 @@ def scan_market():
             
             stock = yf.Ticker(ticker)
             
-            # בדיקה מהירה אם המניה קיימת
+            # בדיקה מהירה
             try:
                 info = stock.info
                 float_shares = info.get('floatShares', 1000000000)
@@ -75,15 +86,15 @@ def scan_market():
             if float_shares is None: float_shares = 1000000000
             if short_percent is None: short_percent = 0
             
-            # הורדת נתונים
+            # נתונים
             df = stock.history(period="6mo", interval="1h")
             
             if df.empty:
-                failed_tickers.append(f"{ticker}: No Data (Empty)")
+                failed_tickers.append(f"{ticker}: No Data")
                 continue
                 
             if len(df) < 60:
-                failed_tickers.append(f"{ticker}: Not enough history (<60)")
+                failed_tickers.append(f"{ticker}: Not enough history")
                 continue
 
             # חישובים
@@ -154,7 +165,7 @@ def scan_market():
             })
             
         except Exception as e:
-            failed_tickers.append(f"{ticker}: Error ({str(e)})")
+            failed_tickers.append(f"{ticker}: Error")
             continue
             
     progress_bar.empty()
@@ -183,7 +194,7 @@ def plot_chart(ticker, stop_loss, take_profit):
 st.title("☁️ AI Sniper Cloud Edition")
 
 if st.button("🚀 START SCAN NOW", type="primary"):
-    with st.spinner('Analyzing Market Data (This may take a moment due to anti-block delay)...'):
+    with st.spinner('Analyzing Market Data (With anti-block delay)...'):
         df, failed_list = scan_market()
         
         if not df.empty:
@@ -192,14 +203,14 @@ if st.button("🚀 START SCAN NOW", type="primary"):
             # סטטיסטיקות
             active = df[df['Action'] != "💤 SLEEPING"]
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Successfully Scanned", len(df))
-            c2.metric("💎 Opportunities", len(active[active['Action'].str.contains("BUY")]))
+            c1.metric("Scanned", len(df))
+            c2.metric("💎 Buys", len(active[active['Action'].str.contains("BUY")]))
             c3.metric("🔥 Low Float", len(df[df['Float(M)'] < 20]))
-            c4.metric("Failed/Skipped", len(failed_list))
+            c4.metric("Skipped", len(failed_list))
             
             st.divider()
             
-            # טבלה ראשית
+            # טבלה
             st.subheader("📊 Live Results")
             def highlight_rows(val):
                 if 'STRONG' in str(val): return 'background-color: #28a745; color: white'
@@ -215,26 +226,25 @@ if st.button("🚀 START SCAN NOW", type="primary"):
             
             # גרפים
             st.divider()
-            st.subheader("📸 Top Charts (Buy Signals)")
+            st.subheader("📸 Top Charts")
             
             buy_signals = df[df['Action'].str.contains("BUY")]
             
             if not buy_signals.empty:
                 for idx, row in buy_signals.iterrows():
-                    with st.expander(f"Show Chart: {row['Ticker']} ({row['Action']})", expanded=True):
+                    with st.expander(f"Show Chart: {row['Ticker']}", expanded=True):
                         fig = plot_chart(row['Ticker'], row['Stop_Loss'], row['Take_Profit'])
                         if fig:
                             st.pyplot(fig)
                             plt.close(fig)
                         st.write(f"**Reasons:** {row['Reasons']}")
             else:
-                st.info("No charts to display (No Buy signals found).")
+                st.info("No Buy signals found yet.")
             
-            # רשימת המניות שנכשלו (לצורך ניקוי)
+            # כשלונות
             if failed_list:
-                with st.expander("⚠️ View Failed/Skipped Tickers (Clean your list)"):
+                with st.expander("⚠️ View Failed Tickers"):
                     st.write(failed_list)
-                    st.caption("These stocks either don't exist, have no data, or were blocked.")
                 
         else:
             st.error("No data found.")
