@@ -9,7 +9,7 @@ import pytz
 # ==========================================
 # ⚙️ הגדרות - גרסה 17.5 (News & Gaps)
 # ==========================================
-st.set_page_config(page_title="Pre-Market Commander", page_icon="📰", layout="wide")
+st.set_page_config(page_title="Day Trading Robot", page_icon="🤖", layout="wide")
 
 # רשימת המניות (כולל הכל)
 TICKERS = [
