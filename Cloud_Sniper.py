@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import pytz
 
 # ==========================================
-# ⚙️ הגדרות - גרסה 19.0 (Score Master)
+# ⚙️ הגדרות - גרסה 20.0 (Full Chart Vision)
 # ==========================================
 st.set_page_config(page_title="Day Trading Robot", page_icon="🤖", layout="wide")
 
@@ -42,48 +42,42 @@ def get_latest_news(stock_obj):
         if news and len(news) > 0:
             latest = news[0]
             title = latest['title']
-            # ניתוח סנטימנט
-            score = 0
             sentiment = "😐"
             t_lower = title.lower()
             
-            # מילים חיוביות
-            if any(x in t_lower for x in ['beat', 'record', 'jump', 'surge', 'approval', 'buy', 'upgrade', 'deal', 'partner']):
+            if any(x in t_lower for x in ['beat', 'record', 'jump', 'surge', 'approval', 'buy', 'upgrade', 'deal']):
                 sentiment = "🟢"
                 score = 10
-            # מילים שליליות
-            elif any(x in t_lower for x in ['miss', 'drop', 'fall', 'investigation', 'lawsuit', 'downgrade', 'offering']):
+            elif any(x in t_lower for x in ['miss', 'drop', 'fall', 'investigation', 'lawsuit', 'downgrade']):
                 sentiment = "🔴"
                 score = -10
+            else:
+                score = 0
                 
             return f"{sentiment} {title}", score
         return "No News", 0
     except:
         return "N/A", 0
 
-def calculate_score(gap, vol, news_score, price, vwap):
-    """ המוח של הרובוט - חישוב ציון 0-100 """
-    score = 50 # ציון בסיס
+def calculate_score(gap, vol, news_score, price, vwap, price_vs_ema):
+    score = 50 
     
-    # 1. ניקוד על ה-GAP
+    # GAP
     if gap > 2: score += 10
     if gap > 5: score += 5
-    if gap > 15: score -= 5 # עליה מוגזמת קצת מסוכנת
+    if gap < -5: score += 10 # Dip Buy opportunity
     
-    # 2. ניקוד על ירידה חזקה (הזדמנות קנייה)
-    if gap < -5: score += 10 # מחיר זול
-    
-    # 3. ווליום
+    # Volume
     if vol > 10000: score += 10
-    if vol > 50000: score += 10
     
-    # 4. חדשות
+    # News
     score += news_score
     
-    # 5. VWAP (האם המחיר מעל הממוצע?)
-    if price > vwap: score += 10
+    # Technicals
+    if price > vwap: score += 10 # Bullish institutional
+    if price_vs_ema: score += 10 # Bullish momentum
     
-    return min(100, max(0, score)) # מגביל בין 0 ל-100
+    return min(100, max(0, score))
 
 def scan_market():
     results = []
@@ -104,7 +98,6 @@ def scan_market():
             if df.empty or len(df) < 5:
                 continue
             
-            # נתונים בזמן אמת
             current_price = df['Close'].iloc[-1]
             last_vol = df['Volume'].iloc[-1]
             
@@ -112,38 +105,38 @@ def scan_market():
             yesterday_close = df['Close'].iloc[-16] if len(df) > 16 else df['Close'].iloc[0]
             gap_percent = ((current_price - yesterday_close) / yesterday_close) * 100
             
-            # חישוב VWAP פשוט ליום האחרון
+            # --- חישוב אינדיקטורים לציון ---
+            # EMA 9
+            df['EMA_9'] = df['Close'].ewm(span=9, adjust=False).mean()
+            price_above_ema = current_price > df['EMA_9'].iloc[-1]
+            
+            # VWAP
             df['VWAP'] = (df['Close'] * df['Volume']).cumsum() / df['Volume'].cumsum()
             current_vwap = df['VWAP'].iloc[-1]
             
             # חדשות וניקוד
             news_text, news_score = get_latest_news(stock)
-            final_score = calculate_score(gap_percent, last_vol, news_score, current_price, current_vwap)
+            final_score = calculate_score(gap_percent, last_vol, news_score, current_price, current_vwap, price_above_ema)
             
-            # --- אסטרטגיה (רק לונג!) ---
+            # סטטוס
             status = "💤 SLEEP"
             instruction = ""
             
-            # אם הציון גבוה - זה שווה בדיקה
             if final_score >= 60:
                 if gap_percent > 0:
                     status = "🚀 MOMENTUM"
-                    instruction = "BUY THE DIP (Wait for pullback)"
+                    instruction = "BUY THE DIP"
                 else:
                     status = "💎 DIP BUY"
-                    instruction = "WATCH FOR REVERSAL (Buy Cheap)"
+                    instruction = "WATCH REVERSAL"
             elif abs(gap_percent) > 2:
                 status = "👀 WATCH"
                 instruction = "Wait for Volume"
             
-            # ניהול סיכונים (לפי בקשתך: יעד 15-20% מינימום)
-            stop_loss = current_price * 0.95 # סטופ 5% למטה
-            target_profit = current_price * 1.20 # יעד 20% למעלה (מינימום)
-            
-            # טריק: אם המניה תנודתית מאוד, היעד יכול להיות גבוה יותר
-            # נבדוק אם היא זזה הרבה
-            if abs(gap_percent) > 10:
-                target_profit = current_price * 1.30 # יעד 30%
+            # יעדים (לפחות 15-20%)
+            stop_loss = current_price * 0.95
+            target_profit = current_price * 1.20 
+            if abs(gap_percent) > 10: target_profit = current_price * 1.30
             
             if status != "💤 SLEEP":
                 results.append({
@@ -165,86 +158,84 @@ def scan_market():
     status_text.empty()
     return pd.DataFrame(results), market_status
 
-def plot_chart(ticker, status):
+def plot_full_chart(ticker, status):
     try:
         stock = yf.Ticker(ticker)
+        # שואבים נתונים לגרף
         df = stock.history(period="2d", interval="5m", prepost=True)
         
-        fig, ax = plt.subplots(figsize=(10, 3))
+        # חישוב האינדיקטורים לגרף
+        df['EMA_9'] = df['Close'].ewm(span=9, adjust=False).mean()
+        df['VWAP'] = (df['Close'] * df['Volume']).cumsum() / df['Volume'].cumsum()
         
-        # הקו הכחול שביקשת!
-        ax.plot(df.index, df['Close'], color='#007bff', linewidth=2, label='Price (Blue Line)')
+        fig, ax = plt.subplots(figsize=(10, 4))
         
-        ax.set_title(f"{ticker} - {status}")
+        # 1. המחיר (שחור)
+        ax.plot(df.index, df['Close'], color='black', linewidth=1.5, label='Price')
+        
+        # 2. EMA 9 (כתום) - קו המומנטום
+        ax.plot(df.index, df['EMA_9'], color='#ff7f0e', linewidth=1.5, linestyle='-', label='EMA 9 (Momentum)')
+        
+        # 3. VWAP (סגול מרוסק) - קו המוסדיים
+        ax.plot(df.index, df['VWAP'], color='#9b59b6', linewidth=1.5, linestyle='--', label='VWAP (Support)')
+        
+        ax.set_title(f"{ticker} Analysis (Pre-Market Included)")
         ax.grid(True, alpha=0.3)
-        ax.legend()
+        ax.legend(loc='upper left') # מקרא בצד שמאל למעלה
+        
         return fig
     except:
         return None
 
 # ==========================================
-# 🖥️ UI (ממשק)
+# 🖥️ UI
 # ==========================================
-st.title("🤖 Day Trading Robot - Score Edition")
+st.title("🤖 Day Trading Robot - Chart Master")
 
 data_df, m_status = scan_market()
 st.info(f"🕒 Market Status: **{m_status}**")
 
 if not data_df.empty:
-    
-    # מיון לפי הציון (הכי גבוה למעלה)
     data_df = data_df.sort_values(by='Score', ascending=False)
     
-    tab1, tab2 = st.tabs(["🏆 TOP SCORES (Table)", "📈 CHARTS (Best Only)"])
+    tab1, tab2 = st.tabs(["🏆 SCORE BOARD", "📈 PRO CHARTS"])
     
-    # --- טאב 1: הטבלה המרכזית ---
     with tab1:
-        st.write("Sorted by AI Score (0-100). Higher is better.")
-        
         st.dataframe(
             data_df,
             column_config={
-                "Score": st.column_config.ProgressColumn(
-                    "AI Score",
-                    help="0-100 Score based on Gap, Volume & News",
-                    format="%d",
-                    min_value=0,
-                    max_value=100,
-                ),
+                "Score": st.column_config.ProgressColumn("Score", format="%d", min_value=0, max_value=100),
                 "Gap": st.column_config.NumberColumn("Gap %", format="%.1f%%"),
                 "Price": st.column_config.NumberColumn("Price", format="$%.2f"),
-                "Target": st.column_config.NumberColumn("Target (+20%)", format="$%.2f"),
-                "Stop": st.column_config.NumberColumn("Stop (-5%)", format="$%.2f"),
+                "Target": st.column_config.NumberColumn("Target", format="$%.2f"),
+                "Stop": st.column_config.NumberColumn("Stop", format="$%.2f"),
                 "News": "Latest News",
             },
             hide_index=True,
             use_container_width=True,
-            height=600
+            height=500
         )
 
-    # --- טאב 2: הגרפים של המניות הכי טובות ---
     with tab2:
-        # מציגים רק מניות עם ציון מעל 60
         best_stocks = data_df[data_df['Score'] >= 60]
-        
         if not best_stocks.empty:
             for i, row in best_stocks.iterrows():
                 st.divider()
-                # כותרת עם הציון
                 st.markdown(f"### 🏅 {row['Ticker']} | Score: {row['Score']}")
                 
                 c1, c2 = st.columns([1, 2])
                 with c1:
-                    st.info(f"**Strategy:** {row['Instruction']}")
+                    st.info(f"**Action:** {row['Instruction']}")
                     st.write(f"**Gap:** {row['Gap']}%")
                     st.write(f"**News:** {row['News']}")
-                    st.success(f"**Target:** ${row['Target']}")
-                    st.error(f"**Stop:** ${row['Stop']}")
+                    st.success(f"Target: ${row['Target']}")
+                    st.error(f"Stop: ${row['Stop']}")
                 with c2:
-                    fig = plot_chart(row['Ticker'], row['Status'])
+                    # כאן נוצר הגרף המלא
+                    fig = plot_full_chart(row['Ticker'], row['Status'])
                     if fig: st.pyplot(fig)
         else:
-            st.warning("No high-score stocks found yet. Check back closer to 16:30.")
+            st.warning("No high-score stocks found.")
 
 else:
     if st.button("🚀 RELOAD"):
