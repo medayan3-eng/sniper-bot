@@ -7,11 +7,10 @@ from datetime import datetime, timedelta
 import pytz
 
 # ==========================================
-# ⚙️ הגדרות - גרסה 21.0 (Sniper Elite)
+# ⚙️ הגדרות - גרסה 22.0 (Pre-Market Execution Fix)
 # ==========================================
 st.set_page_config(page_title="Day Trading Robot", page_icon="🎯", layout="wide")
 
-# רשימת המניות
 TICKERS = [
     'NVDA', 'AMD', 'PLTR', 'SOUN', 'BBAI', 'AI', 'SMCI', 'MU', 'ARM', 'TSM',
     'MARA', 'COIN', 'RIOT', 'MSTR', 'CLSK', 'BITF', 'HUT', 'CIFR',
@@ -57,29 +56,49 @@ def get_latest_news(stock_obj):
         return "N/A", 0
 
 def analyze_daily_context(ticker):
-    """ ניתוח הרקע היומי - 3 ימי ירידות ומגמה ראשית """
+    """ התיקון הקריטי: מתעלמים מהיום ובודקים רק היסטוריה סגורה """
     try:
         stock = yf.Ticker(ticker)
-        # מושכים חודש אחרון של נרות יומיים
+        # מושכים יותר ימים כדי להיות בטוחים
         daily = stock.history(period="1mo", interval="1d")
         
-        if len(daily) < 5: return 0, False, 0
+        if len(daily) < 5: return False, False, 0
         
-        # 1. בדיקת רצף ירידות (The User's Idea)
-        # בודקים אם 3 הימים האחרונים היו אדומים (Close < Open או ירידה במחיר)
-        last_3 = daily.tail(3)
-        is_3_red_days = all(day['Close'] < day['Open'] for i, day in last_3.iterrows())
+        # זיהוי: האם השורה האחרונה היא "היום"?
+        # אם כן, נחתוך אותה החוצה כדי לבדוק רק את מה שנסגר אתמול
+        last_date = daily.index[-1].date()
+        today_date = datetime.now().date() # זהירות עם אזורי זמן, אבל לרוב יאהו נותן תאריך עדכני
         
-        # 2. בדיקת המגמה הראשית (SMA 50)
-        sma_50 = daily['Close'].rolling(window=50).mean().iloc[-1]
-        last_close = daily['Close'].iloc[-1]
-        is_uptrend = last_close > sma_50 # האם אנחנו במגמה עולה כללית?
+        # בטיחות: פשוט לוקחים את 3 הימים *לפני* הנר האחרון אם הוא של היום
+        # אבל הדרך הכי בטוחה: לבדוק את ה-3 ימים שנגמרו לפני ה-GAP של הבוקר
         
-        # 3. רמות מפתח
-        yesterday_high = daily['High'].iloc[-2]
-        yesterday_low = daily['Low'].iloc[-2]
+        # נניח שאנחנו בפרה-מרקט, אז הנר האחרון הוא "היום" (וזז).
+        # אנחנו רוצים לבדוק את: אתמול, שלשום, ולפני שלשום.
+        history_closes = daily.iloc[:-1] # מעיפים את הנר הנוכחי (של היום)
         
-        return is_3_red_days, is_uptrend, yesterday_high
+        if len(history_closes) < 3: return False, False, 0
+        
+        last_3_days = history_closes.tail(3)
+        
+        # הבדיקה: האם ב-3 הימים הסגורים המניה ירדה?
+        # (Close < Open) או (Close < Close של יום לפני)
+        # שיטה מחמירה: כל יום נסגר נמוך מהיום שלפניו
+        closes = last_3_days['Close'].values
+        is_downtrend_3d = (closes[2] < closes[1]) and (closes[1] < closes[0])
+        
+        # או שיטה קלה יותר: 3 נרות אדומים
+        is_3_red = all(day['Close'] < day['Open'] for i, day in last_3_days.iterrows())
+        
+        # מגמה ראשית (50 יום)
+        sma_50 = history_closes['Close'].rolling(window=50).mean().iloc[-1]
+        is_uptrend = history_closes['Close'].iloc[-1] > sma_50
+        
+        # הגבוה של אתמול (לפריצה)
+        yest_high = history_closes['High'].iloc[-1]
+        
+        # אנחנו מחזירים True אם אחד התנאים מתקיים (ירידה רצופה במחיר או נרות אדומים)
+        return (is_downtrend_3d or is_3_red), is_uptrend, yest_high
+        
     except:
         return False, False, 0
 
@@ -96,75 +115,65 @@ def scan_market():
             status_text.text(f"Scanning {ticker} ({i+1}/{total})...")
             progress_bar.progress((i + 1) / total)
             
-            # ניתוח יומי (הרקע)
-            is_3_drops, is_uptrend, yest_high = analyze_daily_context(ticker)
+            # 1. ניתוח היסטורי (אתמול ואחורה)
+            is_oversold, is_uptrend, yest_high = analyze_daily_context(ticker)
             
             stock = yf.Ticker(ticker)
             df = stock.history(period="5d", interval="15m", prepost=True)
             
             if df.empty or len(df) < 5: continue
             
+            # 2. נתונים חיים (עכשיו)
             current_price = df['Close'].iloc[-1]
             last_vol = df['Volume'].iloc[-1]
             
-            # GAP calculation
+            # חישוב GAP (מול הסגירה של אתמול)
             yesterday_close = df['Close'].iloc[-16] if len(df) > 16 else df['Close'].iloc[0]
             gap_percent = ((current_price - yesterday_close) / yesterday_close) * 100
             
-            # Indicators
-            df['EMA_9'] = df['Close'].ewm(span=9, adjust=False).mean()
-            df['VWAP'] = (df['Close'] * df['Volume']).cumsum() / df['Volume'].cumsum()
-            current_vwap = df['VWAP'].iloc[-1]
-            price_vs_ema = current_price > df['EMA_9'].iloc[-1]
-            
-            # News
             news_text, news_score = get_latest_news(stock)
             
-            # --- חישוב הציון החדש (Sniper Score) ---
+            # --- הציון המשופר ---
             score = 50
             reasons = []
             
-            # הבונוס של "הקפיץ" (הרעיון שלך)
-            if is_3_drops:
-                score += 15
-                reasons.append("Spring Loaded (3 Red Days)")
+            # הקומבינציה המושלמת ל-16:00:
+            # ירידה היסטורית (Oversold) + עלייה עכשיו (Gap Up)
+            if is_oversold:
+                if gap_percent > 0:
+                    score += 30 # בינגו!
+                    reasons.append("🔥 SPRING LOADED (3-Day Drop + Green Gap)")
+                else:
+                    score += 10
+                    reasons.append("Oversold (Watch for bounce)")
             
-            # האם פרצנו את הגבוה של אתמול?
             if current_price > yest_high:
                 score += 15
-                reasons.append("Broke Yesterday High")
+                reasons.append("Breaking Yest. High")
                 
-            # מגמה ראשית
-            if is_uptrend:
-                score += 10
-            else:
-                score -= 5 # מסוכן לקנות במגמה יורדת
-            
-            # טכני תוך יומי
             if gap_percent > 2: score += 10
-            if current_price > current_vwap: score += 10
-            if last_vol > 10000: score += 5
             score += news_score
             
             final_score = min(100, max(0, score))
             
-            # --- אסטרטגיה ---
+            # --- קבלת החלטות ---
             status = "💤 SLEEP"
             instruction = ""
             
+            # מניות מעל ציון 70 הן המעניינות
             if final_score >= 70:
-                if is_3_drops and gap_percent > -1:
-                    status = "🪃 REVERSAL" # הקפיץ משתחרר
-                    instruction = "STRONG BUY (Oversold Bounce)"
-                elif gap_percent > 0 and current_price > yest_high:
-                    status = "🚀 BREAKOUT"
-                    instruction = "MOMENTUM BUY"
+                if is_oversold and gap_percent > 0:
+                    status = "🎯 PRE-MARKET BUY"
+                    instruction = "Limit Order (Spring Loaded)"
+                elif gap_percent > 3:
+                    status = "🚀 MOMENTUM"
+                    instruction = "Ride the Wave"
                 else:
                     status = "⚡ ACTION"
-                    instruction = "Watch Intraday"
-            elif final_score >= 50 and abs(gap_percent) > 2:
-                status = "👀 WATCH"
-                instruction = "Wait for Setup"
+                    instruction = "Watch Open"
+            elif final_score >= 60:
+                 status = "👀 WATCH"
+                 instruction = "Wait for Volume"
 
             # ניהול סיכונים
             stop_loss = current_price * 0.95
@@ -190,33 +199,25 @@ def scan_market():
     status_text.empty()
     return pd.DataFrame(results), market_status
 
-def plot_elite_chart(ticker, reasons):
+def plot_context_chart(ticker, reasons):
     try:
         stock = yf.Ticker(ticker)
-        # נתונים תוך יומיים
-        df = stock.history(period="2d", interval="5m", prepost=True)
-        # נתונים יומיים (כדי לראות את ה-3 ימים אחורה)
-        daily = stock.history(period="5d", interval="1d")
+        # גרף יומי (לראות את היסטוריית הירידות)
+        daily = stock.history(period="10d", interval="1d")
+        # גרף תוך יומי (לראות את הקפיצה היום)
+        intraday = stock.history(period="2d", interval="5m", prepost=True)
         
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
         
-        # גרף 1: תוך יומי (הרגיל)
-        df['EMA_9'] = df['Close'].ewm(span=9, adjust=False).mean()
-        df['VWAP'] = (df['Close'] * df['Volume']).cumsum() / df['Volume'].cumsum()
-        
-        ax1.plot(df.index, df['Close'], color='black', label='Price')
-        ax1.plot(df.index, df['EMA_9'], color='orange', label='EMA 9')
-        ax1.plot(df.index, df['VWAP'], color='purple', linestyle='--', label='VWAP')
-        ax1.set_title(f"{ticker} - Intraday (Today)")
-        ax1.legend()
+        # גרף 1: היסטוריה (האם ירדנו?)
+        colors = ['green' if c >= o else 'red' for c, o in zip(daily['Close'], daily['Open'])]
+        ax1.bar(daily.index, daily['Close'] - daily['Open'], bottom=daily['Open'], color=colors, width=0.6)
+        ax1.set_title("1. The Setup (Last 10 Days)")
         ax1.grid(True, alpha=0.3)
         
-        # גרף 2: יומי (Daily Context) - כדי לראות את ה-3 ימים ירידה
-        # צבעים לנרות: ירוק לעליה, אדום לירידה
-        colors = ['green' if c >= o else 'red' for c, o in zip(daily['Close'], daily['Open'])]
-        ax2.bar(daily.index, daily['Close'] - daily['Open'], bottom=daily['Open'], color=colors, width=0.5)
-        ax2.plot(daily.index, daily['Close'], color='blue', alpha=0.3) # קו מחיר
-        ax2.set_title("Daily Trend (Last 5 Days)")
+        # גרף 2: ההזדמנות (עכשיו)
+        ax2.plot(intraday.index, intraday['Close'], color='blue')
+        ax2.set_title("2. The Trigger (Today/Pre-Market)")
         ax2.grid(True, alpha=0.3)
         
         return fig
@@ -226,27 +227,26 @@ def plot_elite_chart(ticker, reasons):
 # ==========================================
 # 🖥️ UI
 # ==========================================
-st.title("🎯 AI Sniper - Elite Edition")
-st.caption("Filters: 3-Day Drop | Yesterday's High Breakout | Daily Trend")
+st.title("🎯 Pre-Market Sniper (16:00 Strategy)")
+st.caption("Hunting 'Spring Loaded' stocks: 3 Red Days -> Green Gap")
 
 data_df, m_status = scan_market()
-st.info(f"🕒 Market Status: **{m_status}**")
+st.info(f"🕒 Status: **{m_status}**")
 
 if not data_df.empty:
     data_df = data_df.sort_values(by='Score', ascending=False)
     
-    tab1, tab2 = st.tabs(["📊 SNIPER TABLE", "🔬 DEEP ANALYSIS"])
+    tab1, tab2 = st.tabs(["📋 SNIPER LIST", "🔍 CHART PROOF"])
     
     with tab1:
         st.dataframe(
             data_df,
             column_config={
-                "Score": st.column_config.ProgressColumn("Confidence", format="%d", min_value=0, max_value=100),
+                "Score": st.column_config.ProgressColumn("Rank", format="%d", min_value=0, max_value=100),
                 "Status": st.column_config.TextColumn("Signal"),
                 "Gap": st.column_config.NumberColumn("Gap %", format="%.1f%%"),
                 "Price": st.column_config.NumberColumn("Price", format="$%.2f"),
-                "Details": "Why to Buy?",
-                "News": "Sentiment"
+                "Details": "Why Buy?",
             },
             hide_index=True,
             use_container_width=True,
@@ -254,26 +254,20 @@ if not data_df.empty:
         )
 
     with tab2:
-        # רק מניות איכותיות באמת
-        elite_stocks = data_df[data_df['Score'] >= 70]
-        if not elite_stocks.empty:
-            for i, row in elite_stocks.iterrows():
+        top_picks = data_df[data_df['Score'] >= 70]
+        if not top_picks.empty:
+            for i, row in top_picks.iterrows():
                 st.divider()
-                st.markdown(f"### 🎯 {row['Ticker']} | Score: {row['Score']}")
-                st.markdown(f"**Thesis:** {row['Details']}")
+                st.subheader(f"{row['Ticker']} | {row['Status']}")
+                st.write(f"**Why:** {row['Details']}")
+                st.info(f"Strategy: {row['Instruction']}")
                 
-                c1, c2 = st.columns([1, 3])
-                with c1:
-                    st.info(f"Signal: {row['Status']}")
-                    st.write(f"Strategy: {row['Status']}")
-                    st.success(f"Target: ${row['Target']}")
-                    st.error(f"Stop: ${row['Stop']}")
-                with c2:
-                    fig = plot_elite_chart(row['Ticker'], row['Details'])
-                    if fig: st.pyplot(fig)
+                # כאן נראה את שני הגרפים: היסטוריה + הווה
+                fig = plot_context_chart(row['Ticker'], row['Details'])
+                if fig: st.pyplot(fig)
         else:
-            st.warning("No 'Elite' setups found. Market might be choppy.")
+            st.warning("No perfect setups found right now.")
 
 else:
-    if st.button("🚀 RELOAD"):
+    if st.button("🚀 SCAN"):
         st.rerun()
